@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Torrent Updater</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300f2ff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M21 2v6h-6'/><path d='M3 12a9 9 0 0 1 15-6.7L21 8'/><path d='M3 22v-6h6'/><path d='M21 12a9 9 0 0 1-15 6.7L3 16'/></svg>">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #05070d;
+            --surface: rgba(255,255,255,0.03);
+            --surface-hover: rgba(255,255,255,0.06);
+            --border: rgba(255,255,255,0.07);
+            --accent: #00f2ff;
+            --accent-glow: rgba(0,242,255,0.35);
+            --text: #e8f4ff;
+            --muted: #6b7c93;
+            --success: #00ff9d;
+            --error: #ff4757;
+            --warning: #ffa502;
+            --updated: #bd93f9;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+            padding: 1.5rem;
+            background-image:
+                radial-gradient(circle at 15% 50%, rgba(0,242,255,0.08) 0, transparent 25%),
+                radial-gradient(circle at 85% 30%, rgba(189,147,249,0.08) 0, transparent 25%);
+        }
+
+        .container { max-width: 950px; margin: 0 auto; }
+
+        /* ── Header ── */
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        h1 {
+            font-size: 1.35rem;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            color: var(--text);
+            background: linear-gradient(135deg, var(--text), var(--accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header-right { display: flex; align-items: center; gap: 0.75rem; }
+
+        /* ── Status Pill ── */
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.4rem 0.9rem;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--muted);
+            transition: all 0.3s;
+        }
+
+        .status-pill.active {
+            background: rgba(0,242,255,0.12);
+            border-color: var(--accent-glow);
+            color: var(--accent);
+            box-shadow: 0 0 15px rgba(0,242,255,0.15);
+        }
+
+        .dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--muted);
+            transition: all 0.3s;
+        }
+
+        .status-pill.active .dot {
+            background: var(--accent);
+            box-shadow: 0 0 8px var(--accent-glow);
+        }
+
+        /* ── Check Now Button ── */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.55rem 1.2rem;
+            border-radius: 0.6rem;
+            font-size: 0.8rem;
+            font-weight: 600;
+            border: 1px solid var(--accent);
+            background: linear-gradient(135deg, rgba(0,242,255,0.15), rgba(0,242,255,0.05));
+            color: var(--accent);
+            cursor: pointer;
+            transition: all 0.25s;
+            box-shadow: 0 0 0 rgba(0,242,255,0);
+        }
+
+        .btn:hover {
+            background: linear-gradient(135deg, rgba(0,242,255,0.25), rgba(0,242,255,0.1));
+            transform: translateY(-1px);
+            box-shadow: 0 0 20px rgba(0,242,255,0.2);
+        }
+
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; filter: grayscale(0.6); }
+        .btn.checking { animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.6; } }
+
+        /* ── Stats Row ── */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 0.875rem;
+            margin-bottom: 1.25rem;
+        }
+
+        @media (max-width: 600px) { .stats-row { grid-template-columns: repeat(2, 1fr); } }
+
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 0.875rem;
+            padding: 1rem 1.1rem;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s;
+        }
+
+        .stat-card:hover {
+            border-color: var(--accent-glow);
+            box-shadow: 0 0 15px rgba(0,242,255,0.08);
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; height: 1px;
+            background: linear-gradient(90deg, transparent, var(--accent), transparent);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .stat-card:hover::before { opacity: 1; }
+
+        .stat-label {
+            font-size: 0.65rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            margin-bottom: 0.35rem;
+        }
+
+        .stat-value {
+            font-size: 1.15rem;
+            font-weight: 600;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .stat-value.accent { color: var(--accent); }
+        .stat-value.success { color: var(--success); }
+
+        /* ── Section card ── */
+        .section {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 0.875rem;
+            overflow: hidden;
+            margin-bottom: 1rem;
+            transition: all 0.3s;
+        }
+
+        /* ── Logs section ── */
+        #logs-section {
+            max-height: 450px;
+        }
+
+        /* ── Logs container ── */
+        #logs-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        /* ── Logs container ── */
+        #logs-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .section:hover {
+            border-color: var(--accent-glow);
+            box-shadow: 0 0 15px rgba(0,242,255,0.06);
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.8rem 1rem;
+            border-bottom: 1px solid var(--border);
+            background: rgba(0,0,0,0.2);
+        }
+
+        .section-title {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .section-title::before {
+            content: '';
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: var(--muted);
+            box-shadow: 0 0 8px var(--muted);
+        }
+
+        .section-title.accent::before { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+        .section-title.success::before { background: var(--success); box-shadow: 0 0 8px var(--success); }
+        .section-title.error::before { background: var(--error); box-shadow: 0 0 8px var(--error); }
+
+        .section-meta {
+            font-size: 0.7rem;
+            color: var(--muted);
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* ── Torrent list ── */
+        .torrent-list { padding: 0; }
+
+        .torrent-row {
+            display: grid;
+            grid-template-columns: 1fr auto auto;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.7rem 1rem;
+            border-bottom: 1px solid var(--border);
+            transition: all 0.2s;
+            position: relative;
+        }
+
+        .torrent-row:last-child { border-bottom: none; }
+        .torrent-row:hover {
+            background: var(--surface-hover);
+            transform: translateX(3px);
+        }
+
+        .torrent-row::before {
+            content: '';
+            position: absolute;
+            left: 0; top: 0; bottom: 0; width: 2px;
+            background: var(--accent);
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .torrent-row:hover::before { opacity: 1; }
+
+        .torrent-name {
+            font-size: 0.8rem;
+            font-weight: 500;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            min-width: 0;
+            transition: color 0.2s;
+        }
+
+        .torrent-row:hover .torrent-name { color: var(--accent); }
+
+        .torrent-time {
+            font-size: 0.7rem;
+            color: var(--muted);
+            white-space: nowrap;
+            flex-shrink: 0;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            font-size: 0.65rem;
+            font-weight: 600;
+            padding: 0.25rem 0.65rem;
+            border-radius: 999px;
+            white-space: nowrap;
+            flex-shrink: 0;
+            border: 1px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .badge-ok {
+            color: var(--success);
+            background: rgba(0,255,157,0.08);
+            border-color: rgba(0,255,157,0.2);
+            box-shadow: 0 0 10px rgba(0,255,157,0.1);
+        }
+
+        .badge-updated {
+            color: var(--updated);
+            background: rgba(189,147,249,0.08);
+            border-color: rgba(189,147,249,0.2);
+            box-shadow: 0 0 10px rgba(189,147,249,0.1);
+        }
+
+        .badge-error {
+            color: var(--error);
+            background: rgba(255,71,87,0.08);
+            border-color: rgba(255,71,87,0.2);
+            box-shadow: 0 0 10px rgba(255,71,87,0.1);
+        }
+
+        .empty-state {
+            padding: 2.5rem;
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.8rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .empty-state::before {
+            content: '⚡';
+            font-size: 1.5rem;
+            opacity: 0.3;
+        }
+
+        /* ── Spinner animation on check ── */
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinning { animation: spin 0.8s linear infinite; display: inline-block; }
+
+        /* ── Updates highlight ── */
+        .updates-banner {
+            display: none;
+            background: linear-gradient(135deg, rgba(189,147,249,0.15), rgba(0,242,255,0.1));
+            border: 1px solid rgba(189,147,249,0.3);
+            border-radius: 0.875rem;
+            padding: 0.875rem 1rem;
+            margin-bottom: 1rem;
+            font-size: 0.8rem;
+            color: var(--updated);
+            font-weight: 500;
+            box-shadow: 0 0 20px rgba(189,147,249,0.15);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 20px rgba(189,147,249,0.15); }
+            50% { box-shadow: 0 0 30px rgba(189,147,249,0.25); }
+        }
+
+        .updates-banner.visible { display: flex; align-items: center; gap: 0.6rem; }
+
+        .progress-bar-wrap {
+            height: 3px;
+            background: var(--border);
+            border-radius: 999px;
+            overflow: hidden;
+            margin-bottom: 1.25rem;
+            position: relative;
+        }
+
+        .progress-bar {
+            height: 100%;
+            width: 0;
+            background: linear-gradient(90deg, var(--accent), var(--updated));
+            border-radius: 999px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .progress-bar::after {
+            content: '';
+            position: absolute;
+            top: 0; right: 0; bottom: 0; left: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+            animation: shimmer 1.5s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        /* ── Logs section ── */
+        .log-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            padding: 0.5rem 1rem;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.7rem;
+            transition: background 0.2s;
+        }
+
+        .log-row:last-child { border-bottom: none; }
+        .log-row:hover { background: var(--surface-hover); }
+
+        .log-time {
+            font-size: 0.6rem;
+            color: var(--muted);
+            flex-shrink: 0;
+            font-variant-numeric: tabular-nums;
+            margin-top: 0.15rem;
+        }
+
+        .log-message {
+            flex: 1;
+            font-size: 0.75rem;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .log-info { color: var(--text); }
+        .log-warning { color: var(--warning); }
+        .log-error { color: var(--error); }
+        .log-success { color: var(--success); }
+
+        /* ── Scrollbar ── */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb {
+            background: var(--surface);
+            border-radius: 999px;
+        }
+        ::-webkit-scrollbar-thumb:hover { background: var(--border); }
+    </style>
+</head>
+<body>
+    <div class="container">
+
+        <header>
+            <h1>Torrent Updater</h1>
+            <div class="header-right">
+                <div class="status-pill" id="status-pill">
+                    <div class="dot" id="dot"></div>
+                    <span id="status-text">—</span>
+                </div>
+                <button class="btn" id="check-now">
+                    <svg id="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                    Проверить
+                </button>
+            </div>
+        </header>
+
+        <div class="progress-bar-wrap" id="progress-wrap" style="display:none">
+            <div class="progress-bar" id="progress-bar"></div>
+        </div>
+
+        <div class="stats-row">
+            <div class="stat-card">
+                <div class="stat-label">Last check</div>
+                <div class="stat-value" id="last-check">—</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Next check</div>
+                <div class="stat-value" id="next-check">—</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Total checks</div>
+                <div class="stat-value accent" id="total-checks">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Updated</div>
+                <div class="stat-value success" id="total-updates">0</div>
+            </div>
+        </div>
+
+        <div class="updates-banner" id="updates-banner">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+            <span id="updates-banner-text">Updates found</span>
+        </div>
+
+        <!-- Torrent list -->
+        <div class="section">
+            <div class="section-header">
+                <span class="section-title accent">Torrents</span>
+                <span class="section-meta" id="torrent-count"></span>
+            </div>
+            <div class="torrent-list" id="torrent-list">
+                <div class="empty-state">No data — run check</div>
+            </div>
+        </div>
+
+        <!-- Only errors (if any) -->
+        <div class="section" id="errors-section" style="display:none">
+            <div class="section-header">
+                <span class="section-title error">Errors</span>
+                <span class="section-meta" id="errors-count"></span>
+            </div>
+            <div class="torrent-list" id="errors-list"></div>
+        </div>
+
+        <!-- Recent logs -->
+        <div class="section" id="logs-section" style="display:none">
+            <div class="section-header">
+                <span class="section-title">Logs</span>
+                <span class="section-meta" id="logs-count"></span>
+            </div>
+            <div class="torrent-list" id="logs-list"></div>
+        </div>
+
+    </div>
+
+    <script>
+        let prevStatus = null;
+        let checkingProgress = 0;
+
+        async function updateStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+
+                // ── Status pill ──
+                const pill = document.getElementById('status-pill');
+                const statusText = document.getElementById('status-text');
+                const isActive = data.status !== 'idle';
+                pill.classList.toggle('active', isActive);
+                const labels = { idle: 'Idle', checking: 'Checking…', updating: 'Updating…' };
+                statusText.textContent = labels[data.status] || data.status;
+
+                // ── Check button state ──
+                checkBtn.disabled = isActive;
+                checkBtn.classList.toggle('checking', isActive);
+
+                // ── Progress bar while checking ──
+                const wrap = document.getElementById('progress-wrap');
+                const bar = document.getElementById('progress-bar');
+                if (isActive) {
+                    wrap.style.display = 'block';
+                    checkingProgress = Math.min(checkingProgress + 2, 98);
+                    bar.style.width = checkingProgress + '%';
+                } else {
+                    if (checkingProgress > 0) {
+                        bar.style.width = '100%';
+                        setTimeout(() => {
+                            wrap.style.display = 'none';
+                            checkingProgress = 0;
+                        }, 600);
+                    }
+                }
+
+                // ── Stats ──
+                const fmt = s => s ? s.replace(/^\d{4}-\d{2}-\d{2} /, '') : '—';
+                document.getElementById('last-check').textContent = fmt(data.last_check);
+                document.getElementById('next-check').textContent = fmt(data.next_check);
+                document.getElementById('total-checks').textContent = data.total_checks || 0;
+                document.getElementById('total-updates').textContent = data.total_updates || 0;
+
+                // ── Deduplicate history: keep only last record per torrent name ──
+                const seen = new Map();
+                if (data.history) {
+                    for (const item of data.history) {
+                        if (!seen.has(item.torrent)) {
+                            seen.set(item.torrent, item);
+                        }
+                    }
+                }
+
+                const torrents = [...seen.values()];
+                const errors = torrents.filter(t => t.state === 'error');
+                const updated = torrents.filter(t => t.state === 'updated');
+
+                // ── Updates banner ──
+                const banner = document.getElementById('updates-banner');
+                if (updated.length > 0) {
+                    banner.classList.add('visible');
+                    document.getElementById('updates-banner-text').textContent =
+                        `Обновлено: ${updated.length === 1 ? updated[0].torrent : updated.length + ' торрентов'}`;
+                } else {
+                    banner.classList.remove('visible');
+                }
+
+                // ── Torrent list ──
+                const list = document.getElementById('torrent-list');
+                document.getElementById('torrent-count').textContent =
+                    torrents.length ? `${torrents.length} шт.` : '';
+
+                if (torrents.length === 0) {
+                    list.innerHTML = '                <div class="empty-state">No data — run check</div>';
+                } else {
+                    torrents.sort((a, b) => {
+                        const order = { error: 0, updated: 1, ok: 2 };
+                        return (order[a.state] ?? 3) - (order[b.state] ?? 3);
+                    });
+                    list.innerHTML = torrents.map(item => renderRow(item)).join('');
+                }
+
+                // ── Errors section ──
+                const errSec = document.getElementById('errors-section');
+                if (errors.length > 0) {
+                    errSec.style.display = 'block';
+                    document.getElementById('errors-count').textContent = `${errors.length} шт.`;
+                    document.getElementById('errors-list').innerHTML =
+                        errors.map(item => renderErrorRow(item)).join('');
+                } else {
+                    errSec.style.display = 'none';
+                }
+
+                // ── Logs section ──
+                const logsSec = document.getElementById('logs-section');
+                const logs = data.logs || [];
+                const logsList = document.getElementById('logs-list');
+                const prevScrollTop = logsList.scrollTop;
+                const prevScrollHeight = logsList.scrollHeight;
+                const wasAtBottom = prevScrollTop + 10 >= prevScrollHeight - logsList.clientHeight;
+
+                if (logs.length > 0) {
+                    logsSec.style.display = 'block';
+                    document.getElementById('logs-count').textContent = `${logs.length} шт.`;
+                    logsList.innerHTML = logs.map(item => renderLogRow(item)).join('');
+                    if (wasAtBottom) {
+                        logsList.scrollTop = logsList.scrollHeight;
+                    }
+                } else {
+                    logsSec.style.display = 'none';
+                }
+
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function truncate(s, n) {
+            return s.length > n ? s.slice(0, n) + '…' : s;
+        }
+
+        function renderRow(item) {
+            const badges = {
+                ok:      '<span class="badge badge-ok">✓ Актуально</span>',
+                updated: '<span class="badge badge-updated">↑ Обновлено</span>',
+                error:   '<span class="badge badge-error">✗ Ошибка</span>',
+            };
+            const badge = badges[item.state] || `<span class="badge">${item.state}</span>`;
+
+            const dates = (item.local_date && item.tracker_date && item.local_date !== '?')
+                ? `${item.local_date} → ${item.tracker_date}` : '';
+
+            return `
+                <div class="torrent-row" title="${escHtml(item.torrent)}${dates ? '\n' + dates : ''}">
+                    <div class="torrent-name">${escHtml(truncate(item.torrent, 65))}</div>
+                    <div class="torrent-time">${item.time || ''}</div>
+                    ${badge}
+                </div>`;
+        }
+
+        function renderErrorRow(item) {
+            const msg = item.error_msg || 'Нет данных';
+            return `
+                <div class="torrent-row" style="border-left: 2px solid var(--error)" title="${escHtml(item.torrent)}\n${escHtml(msg)}">
+                    <div class="torrent-name" style="color:var(--error)">${escHtml(truncate(item.torrent, 50))}</div>
+                    <div class="torrent-time" style="color:var(--error);font-size:0.7rem">${escHtml(truncate(msg, 35))}</div>
+                    <span class="badge badge-error">✗</span>
+                </div>`;
+        }
+
+        function renderLogRow(item) {
+            const msg = String(item);
+            const timeMatch = msg.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/);
+            const time = timeMatch ? timeMatch[1].split(' ')[1] : '';
+            const levelMatch = msg.match(/ - (INFO|WARNING|ERROR|SUCCESS) - /);
+            const level = levelMatch ? levelMatch[1] : 'INFO';
+            const message = levelMatch ? msg.split(levelMatch[0])[1] : msg;
+            
+            const colors = {
+                'INFO': 'log-info',
+                'WARNING': 'log-warning',
+                'ERROR': 'log-error',
+                'SUCCESS': 'log-success'
+            };
+            const colorClass = colors[level] || 'log-info';
+            
+            return `
+                <div class="log-row">
+                    <div class="log-time">${time}</div>
+                    <div class="log-message ${colorClass}">${escHtml(message)}</div>
+                </div>`;
+        }
+
+        function escHtml(s) {
+            return String(s)
+                .replace(/&/g,'&amp;')
+                .replace(/</g,'&lt;')
+                .replace(/>/g,'&gt;')
+                .replace(/"/g,'&quot;');
+        }
+
+        // ── Check Now button ──
+        const checkBtn = document.getElementById('check-now');
+        const checkIcon = document.getElementById('btn-icon');
+
+        checkBtn.addEventListener('click', async () => {
+            checkBtn.disabled = true;
+            checkIcon.classList.add('spinning');
+
+            try {
+                await fetch('/api/check', { method: 'POST' });
+                checkingProgress = 5;
+            } catch(e) { console.error(e); }
+        });
+
+        updateStatus();
+        setInterval(updateStatus, 5000);
+    </script>
+</body>
+</html>
