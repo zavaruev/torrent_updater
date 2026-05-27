@@ -460,7 +460,7 @@
         <header>
             <h1>Torrent Updater</h1>
             <div class="header-right">
-                <button class="btn" id="check-now">
+                <button class="btn" id="check-btn">
                     <svg id="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
                     <span id="btn-text">Check</span>
                 </button>
@@ -535,17 +535,15 @@
                 const res = await fetch('/api/status');
                 const data = await res.json();
 
-                // ── Status pill ──
-                const pill = document.getElementById('status-pill');
-                const statusText = document.getElementById('status-text');
-                const isActive = data.status !== 'idle';
-                pill.classList.toggle('active', isActive);
-                const labels = { idle: 'Idle', checking: 'Checking…', updating: 'Updating…' };
-                statusText.textContent = labels[data.status] || data.status;
-
                 // ── Check button state ──
+                const isActive = data.status !== 'idle';
+                const btnText = document.getElementById('btn-text');
+                const btnIcon = document.getElementById('btn-icon');
+                const labels = { idle: 'Check', checking: 'Checking…', updating: 'Updating…' };
+                btnText.textContent = labels[data.status] || data.status;
                 checkBtn.disabled = isActive;
                 checkBtn.classList.toggle('checking', isActive);
+                btnIcon.classList.toggle('spinning', isActive);
 
                 // ── Progress bar while checking ──
                 const wrap = document.getElementById('progress-wrap');
@@ -709,23 +707,14 @@
                 .replace(/"/g,'&quot;');
         }
 
-        // ── Check Now button ──
-        const checkBtn = document.getElementById('check-now');
-        const checkIcon = document.getElementById('btn-icon');
-        const btnText = document.getElementById('btn-text');
+        // ── Check button ──
+        const checkBtn = document.getElementById('check-btn');
 
         checkBtn.addEventListener('click', async () => {
-            checkBtn.disabled = true;
-            checkIcon.classList.add('spinning');
-            btnText.textContent = 'Checking...';
-
             try {
                 await fetch('/api/check', { method: 'POST' });
+                checkingProgress = 5;
             } catch(e) { console.error(e); }
-
-            checkBtn.disabled = false;
-            checkIcon.classList.remove('spinning');
-            btnText.textContent = 'Check';
         });
 
         updateStatus();
