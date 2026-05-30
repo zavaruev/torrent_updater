@@ -1,0 +1,14 @@
+undetected-chromedriver
+selenium
+transmission-rpc
+dateparser
+beautifulsoup4
+python-dotenv
+lxml
+requests
+setuptools
+schedule
+fastapi
+uvicorn
+jinja2
+python-multipart

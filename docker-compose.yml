@@ -1,0 +1,19 @@
+services:
+  torrent-updater:
+    build: .
+    container_name: torrent-updater
+    network_mode: host
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - CHECK_INTERVAL=1
+      - CHECK_INTERVAL_UNIT=hours
+      - RUN_ON_STARTUP=true
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
