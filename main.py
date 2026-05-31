@@ -251,7 +251,9 @@ def create_driver() -> Optional[uc.Chrome]:
         kwargs = {'options': options, 'use_subprocess': True}
         if chrome_version:
             kwargs['version_main'] = chrome_version
-        return uc.Chrome(**kwargs)
+        driver = uc.Chrome(**kwargs)
+        driver.set_page_load_timeout(30)
+        return driver
     except Exception as e:
         logger.error(f"Failed to create Chrome driver: {e}")
         return None
@@ -287,7 +289,7 @@ def _try_login(login_username: str, login_password: str) -> Optional[uc.Chrome]:
             title = driver.title
             url = driver.current_url
             # 521 / 522 / 503 = server down, no point waiting
-            if '521' in title or '522' in title or '503' in title:
+            if '521' in title or '520' in title or '522' in title or '503' in title:
                 logger.warning(f"Server error page: '{title}'")
                 return None
             # Login form appeared = challenge passed
@@ -392,7 +394,7 @@ def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: uc.Ch
             return (False, "", "", "Сессия истекла", False)
 
         # If Cloudflare blocked the page
-        if '521' in title_text or '503' in title_text or '522' in title_text:
+        if '521' in title_text or '520' in title_text or '503' in title_text or '522' in title_text:
             logger.warning(f"CF error on torrent page: {title_text} | {url}")
             return (False, "", "", f"CF {title_text[:30]}", False)
 
