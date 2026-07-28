@@ -365,6 +365,29 @@ def is_torrent_updated(url: str, torrent_date: datetime.datetime, session: WebDr
             time.sleep(wait_sec)
     return (False, "", "", last_error, False)
 
+def _cdp_navigate(url: str, driver: WebDriver, timeout: int = 30) -> bool:
+    """Navigate via CDP with a timeout. Returns True if navigate cmd was sent."""
+    try:
+        driver.execute_cdp_cmd("Page.stopLoading", {})
+    except Exception:
+        pass
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(driver.execute_cdp_cmd, "Page.navigate", {"url": url})
+        try:
+            fut.result(timeout=timeout)
+            return True
+        except concurrent.futures.TimeoutError:
+            logger.info(f"CDP navigate timed out after {timeout}s")
+            try:
+                driver.execute_cdp_cmd("Page.stopLoading", {})
+            except Exception:
+                pass
+            return False
+        except Exception as exc:
+            logger.info(f"CDP navigate error: {exc}")
+            return False
+
 def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDriver) -> tuple[bool, str, str, str, bool]:
     """Returns: (is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete)
     is_season_complete: True when the rutracker page title contains e.g. 'Серии: 1-8 из 8'
@@ -372,17 +395,7 @@ def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDr
     try:
         driver = session  # session IS the WebDriver from sb.connect()
 
-        # Kill any hanging page first
-        try:
-            driver.execute_cdp_cmd("Page.stopLoading", {})
-        except Exception:
-            pass
-
-        # Navigate via CDP — non-blocking, doesn't wait for page load
-        try:
-            driver.execute_cdp_cmd("Page.navigate", {"url": url})
-        except Exception as exc:
-            logger.info(f"CDP navigate error: {exc}")
+        _cdp_navigate(url, driver)
 
         time.sleep(1)
 
@@ -484,15 +497,7 @@ def download_and_add_torrent(url: str, session: WebDriver, to_dir: str, tr: Clie
 
     for attempt in range(1, max_retries + 1):
         try:
-            # Kill any hanging page first, then navigate via CDP
-            try:
-                driver.execute_cdp_cmd("Page.stopLoading", {})
-            except Exception:
-                pass
-            try:
-                driver.execute_cdp_cmd("Page.navigate", {"url": url})
-            except Exception as exc:
-                logger.info(f"CDP navigate error: {exc}")
+            _cdp_navigate(url, driver)
 
             # Poll current_url — works even if renderer is hung
             current_url = ''
