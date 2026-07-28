@@ -655,6 +655,8 @@ if __name__ == "__main__":
 
         with SB(uc=True, xvfb=True) as sb:
             session = create_session(sb, LOGIN_RUTRACKER, PASSWORD_RUTRACKER)
+            if session:
+                session.set_script_timeout(30)
             if not session:
                 logger.warning("Login failed completely. Will retry in 15 minutes.")
                 status_manager.update_status("idle")
