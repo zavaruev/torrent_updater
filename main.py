@@ -370,23 +370,29 @@ def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDr
     is_season_complete: True when the rutracker page title contains e.g. 'Серии: 1-8 из 8'
     """
     try:
-        driver = session  # session IS the Chrome driver
-        driver.execute_script("window.location.href = arguments[0]", url)
+        driver = session  # session IS the WebDriver from sb.connect()
 
-        # Wait for readyState then a bit more for JS rendering
+        # Kill any hanging page first
         try:
-            WebDriverWait(driver, 30).until(
-                lambda d: d.execute_script('return document.readyState') == 'complete'
-            )
-        except TimeoutException:
-            pass
-        time.sleep(0.5)  # reduced extra wait for Rutracker JS
-
-        try:
-            driver.execute_script("window.stop()")
+            driver.execute_cdp_cmd("Page.stopLoading", {})
         except Exception:
             pass
-        time.sleep(0.3)
+
+        # Navigate via CDP — non-blocking, doesn't wait for page load
+        try:
+            driver.execute_cdp_cmd("Page.navigate", {"url": url})
+        except Exception as exc:
+            logger.info(f"CDP navigate error: {exc}")
+
+        time.sleep(1)
+
+        # Stop loading to prevent Cloudflare/Chrome hang
+        try:
+            driver.execute_cdp_cmd("Page.stopLoading", {})
+        except Exception:
+            pass
+        time.sleep(0.5)
+
         page_source = driver.page_source
         soup = BeautifulSoup(page_source, 'lxml')
         title_text = soup.find('title')
@@ -478,11 +484,15 @@ def download_and_add_torrent(url: str, session: WebDriver, to_dir: str, tr: Clie
 
     for attempt in range(1, max_retries + 1):
         try:
-            # Navigate via JS to avoid page_load_timeout blocking
+            # Kill any hanging page first, then navigate via CDP
             try:
-                driver.execute_script("window.location.href = arguments[0]", url)
+                driver.execute_cdp_cmd("Page.stopLoading", {})
+            except Exception:
+                pass
+            try:
+                driver.execute_cdp_cmd("Page.navigate", {"url": url})
             except Exception as exc:
-                logger.info(f"Nav exec error: {type(exc).__name__}")
+                logger.info(f"CDP navigate error: {exc}")
 
             # Poll current_url — works even if renderer is hung
             current_url = ''
@@ -500,13 +510,19 @@ def download_and_add_torrent(url: str, session: WebDriver, to_dir: str, tr: Clie
                 logger.error("Session expired during download attempt")
                 return False
 
-            # Get page source — stop renderer first if needed
+            # Stop loading before reading page source
+            try:
+                driver.execute_cdp_cmd("Page.stopLoading", {})
+            except Exception:
+                pass
+            time.sleep(0.5)
+
             try:
                 page_html = driver.page_source
             except Exception as exc:
                 logger.info(f"page_source error: {type(exc).__name__}")
                 try:
-                    driver.execute_script("window.stop()")
+                    driver.execute_cdp_cmd("Page.stopLoading", {})
                     time.sleep(1)
                     page_html = driver.page_source
                 except Exception:
@@ -655,8 +671,6 @@ if __name__ == "__main__":
 
         with SB(uc=True, xvfb=True) as sb:
             session = create_session(sb, LOGIN_RUTRACKER, PASSWORD_RUTRACKER)
-            if session:
-                session.set_script_timeout(30)
             if not session:
                 logger.warning("Login failed completely. Will retry in 15 minutes.")
                 status_manager.update_status("idle")
