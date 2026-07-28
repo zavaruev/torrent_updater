@@ -382,6 +382,11 @@ def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDr
             pass
         time.sleep(0.5)  # reduced extra wait for Rutracker JS
 
+        try:
+            driver.execute_script("window.stop()")
+        except Exception:
+            pass
+        time.sleep(0.3)
         page_source = driver.page_source
         soup = BeautifulSoup(page_source, 'lxml')
         title_text = soup.find('title')
