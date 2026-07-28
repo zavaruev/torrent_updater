@@ -395,7 +395,8 @@ def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDr
     try:
         driver = session  # session IS the WebDriver from sb.connect()
 
-        _cdp_navigate(url, driver)
+        if not _cdp_navigate(url, driver):
+            return (False, "", "", "CDP navigate timed out", False)
 
         time.sleep(1)
 
