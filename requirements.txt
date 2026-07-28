@@ -1,4 +1,4 @@
-undetected-chromedriver
+seleniumbase
 selenium
 transmission-rpc
 dateparser

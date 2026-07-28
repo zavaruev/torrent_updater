@@ -30,5 +30,7 @@ DOWNLOAD_DIR=/путь/к/загрузкам
 
 ## Важно
 - Chrome устанавливается в Docker (Dockerfile строки 9-19)
-- Логин через JavaScript-инъекцию для обхода Cloudflare (`main.py:314-316`)
+- `page_load_timeout(60)` — предотвращает зависание на 120+ секунд при Cloudflare-челлендже (`main.py:257`)
+- Навигация через `execute_script("window.location.href=...")` в `_try_check_torrent` и `download_and_add_torrent` — избегает блокировки page_load_timeout
+- После клика Login: `driver.get("index.php")` обёрнут в `try/except Exception` с `window.stop()` — Cloudflare может задерживать рендер даже после успешного логина, таймаут renderer'а не мешает продолжить
 - Telegram-уведомления закомментированы (требуются `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID`)

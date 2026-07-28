@@ -7,16 +7,17 @@ import sys
 import threading
 import concurrent.futures
 import random
-import subprocess
 import re
 import schedule
 import uvicorn
+import base64
 from typing import Optional, List, Dict
 from collections import deque
 
 from dotenv import load_dotenv
-import undetected_chromedriver as uc
+from seleniumbase import SB
 from selenium.webdriver.common.by import By
+from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
@@ -79,8 +80,8 @@ class StatusManager:
         with self._lock:
             self.last_check = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    def record_torrent_check(self, torrent: str, local_date: str, tracker_date: str, state: str, error_msg: str = ''):
-        """Record result of a single torrent check.
+    def record_torrent_check(self, torrent: str, local_date: str, tracker_date: str, state: str, error_msg: str = '', torrent_url: str = ''):
+        """Records a torrent check result in history.
         state: 'ok' (up-to-date), 'updated' (new version downloaded), 'error' (failed)
         Replaces any previous entry for the same torrent so history never has duplicates.
         """
@@ -94,6 +95,7 @@ class StatusManager:
             self.history.insert(0, {
                 "time": datetime.datetime.now().strftime("%H:%M:%S"),
                 "torrent": torrent,
+                "torrent_url": torrent_url,
                 "local_date": local_date,
                 "tracker_date": tracker_date,
                 "state": state,  # 'ok', 'updated', 'error'
@@ -102,9 +104,9 @@ class StatusManager:
             # Keep only last 100
             self.history = self.history[:100]
 
-    def record_update(self, torrent: str, local_date: str, tracker_date: str, success: bool, error_msg: str = ''):
+    def record_update(self, torrent: str, local_date: str, tracker_date: str, success: bool, error_msg: str = '', torrent_url: str = ''):
         """Legacy wrapper — kept for compatibility."""
-        self.record_torrent_check(torrent, local_date, tracker_date, 'updated' if success else 'error', error_msg=error_msg)
+        self.record_torrent_check(torrent, local_date, tracker_date, 'updated' if success else 'error', error_msg=error_msg, torrent_url=torrent_url)
 
 status_manager = StatusManager()
 
@@ -165,23 +167,23 @@ def send_telegram_notification(
     """Sends a formatted Telegram notification about torrent update."""
     
     if custom_message:
-        status_emoji = "✅"
+        status_emoji = "\u2705"
         status_text = custom_message
     elif success:
-        status_emoji = "✅"
-        status_text = "Успешно обновлён"
+        status_emoji = "\u2705"
+        status_text = "\u0423\u0441\u043f\u0435\u0448\u043d\u043e \u043e\u0431\u043d\u043e\u0432\u043b\u0451\u043d"
     else:
-        status_emoji = "❌"
-        status_text = "Ошибка обновления"
+        status_emoji = "\u274c"
+        status_text = "\u041e\u0448\u0438\u0431\u043a\u0430 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f"
     
     # Always log to console
     log_message = f"""
 {'=' * 50}
 {status_emoji} {status_text}
-📥 Торрент: {torrent_name}
-📅 Локальная дата: {local_date}
-📅 Дата на трекере: {tracker_date}
-🔗 URL: {torrent_url}
+\U0001f4e5 \u0422\u043e\u0440\u0440\u0435\u043d\u0442: {torrent_name}
+\U0001f4c5 \u041b\u043e\u043a\u0430\u043b\u044c\u043d\u0430\u044f \u0434\u0430\u0442\u0430: {local_date}
+\U0001f4c5 \u0414\u0430\u0442\u0430 \u043d\u0430 \u0442\u0440\u0435\u043a\u0435\u0440\u0435: {tracker_date}
+\U0001f517 URL: {torrent_url}
 {'=' * 50}"""
     logger.info(log_message)
     
@@ -192,14 +194,14 @@ def send_telegram_notification(
     message = f"""
 {status_emoji} <b>{status_text}</b>
 
-📥 <b>Торрент:</b>
+\U0001f4e5 <b>\u0422\u043e\u0440\u0440\u0435\u043d\u0442:</b>
 <code>{torrent_name}</code>
 
-📅 <b>Даты:</b>
-• Локальная: <code>{local_date}</code>
-• Трекер: <code>{tracker_date}</code>
+\U0001f4c5 <b>\u0414\u0430\u0442\u044b:</b>
+• \u041b\u043e\u043a\u0430\u043b\u044c\u043d\u0430\u044f: <code>{local_date}</code>
+• \u0422\u0440\u0435\u043a\u0435\u0440: <code>{tracker_date}</code>
 
-🔗 <a href="{torrent_url}">Открыть на трекере</a>
+\U0001f517 <a href="{torrent_url}">\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043d\u0430 \u0442\u0440\u0435\u043a\u0435\u0440\u0435</a>
 """
     
     # TODO: раскомментировать когда настроишь Telegram
@@ -221,116 +223,113 @@ def send_telegram_notification(
     # except Exception as e:
     #     logger.error(f"Error sending Telegram notification: {e}")
 
-def get_chrome_version() -> Optional[int]:
-    """Detect installed Chrome major version."""
-    try:
-        result = subprocess.run(
-            ['google-chrome', '--version'],
-            capture_output=True, text=True, timeout=10
-        )
-        match = re.search(r'(\d+)\.', result.stdout)
-        if match:
-            ver = int(match.group(1))
-            logger.info(f"Detected Chrome version: {ver}")
-            return ver
-    except Exception as e:
-        logger.warning(f"Could not detect Chrome version: {e}")
-    return None
-
-def create_driver() -> Optional[uc.Chrome]:
-    """Create an undetected Chrome WebDriver instance."""
-    try:
-        chrome_version = get_chrome_version()
-        options = uc.ChromeOptions()
-        options.add_argument('--headless=new')
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-gpu')
-        options.add_argument('--window-size=1920,1080')
-        options.add_argument('--lang=ru-RU')
-        kwargs = {'options': options, 'use_subprocess': True}
-        if chrome_version:
-            kwargs['version_main'] = chrome_version
-        driver = uc.Chrome(**kwargs)
-        driver.set_page_load_timeout(30)
-        return driver
-    except Exception as e:
-        logger.error(f"Failed to create Chrome driver: {e}")
-        return None
-
-def create_session(login_username: str, login_password: str, max_retries: int = 3) -> Optional[uc.Chrome]:
-    """Opens Chrome, logs into Rutracker, returns the authenticated driver."""
+def create_session(sb, login_username: str, login_password: str, max_retries: int = 3) -> Optional[WebDriver]:
+    """Uses the SB context to log into Rutracker, returns the authenticated driver."""
+    driver = sb.driver
     for attempt in range(1, max_retries + 1):
-        result = _try_login(login_username, login_password)
+        result = _try_login(sb, driver, login_username, login_password)
         if result is not None:
             return result
         if attempt < max_retries:
             wait_sec = random.uniform(10, 30)
             logger.warning(f"Login attempt {attempt}/{max_retries} failed. Retrying in {wait_sec:.0f}s...")
             time.sleep(wait_sec)
-    logger.error(f"All {max_retries} login attempts failed.")
     return None
 
-def _try_login(login_username: str, login_password: str) -> Optional[uc.Chrome]:
-    """Single Chrome login attempt."""
-    driver = None
+def _try_login(sb, driver: WebDriver, login_username: str, login_password: str) -> Optional[WebDriver]:
+    """Single login attempt using CDP mode for Turnstile bypass."""
     try:
-        driver = create_driver()
-        if not driver:
+        logger.info("Opening Rutracker login page via CDP mode...")
+        sb.activate_cdp_mode()
+        sb.goto("https://rutracker.org/forum/login.php")
+        sb.sleep(8)
+        sb.solve_captcha()
+        sb.sleep(5)
+        sb.connect()
+
+        title = driver.title
+        if '521' in title or '520' in title or '522' in title or '503' in title:
+            logger.warning(f"Server error page: '{title}'")
             return None
 
-        logger.info("Opening Rutracker login page...")
-        driver.get("https://rutracker.org/forum/login.php")
-
-        # Step 1: Wait up to 90s for Cloudflare challenge to pass
-        # (undetected-chromedriver handles JS challenge automatically, just needs time)
-        deadline = time.time() + 90
-        while time.time() < deadline:
-            title = driver.title
-            url = driver.current_url
-            # 521 / 522 / 503 = server down, no point waiting
-            if '521' in title or '520' in title or '522' in title or '503' in title:
-                logger.warning(f"Server error page: '{title}'")
-                return None
-            # Login form appeared = challenge passed
-            fields = driver.find_elements(By.NAME, 'login_username')
-            if fields:
-                logger.info(f"Login form found after {90 - int(deadline - time.time())}s | title: '{title}'")
-                break
-            time.sleep(2)
+        fields = driver.find_elements(By.NAME, 'login_username')
+        if fields:
+            logger.info(f"Login form found after CDP load | title: '{title}'")
         else:
-            logger.warning(f"Timed out waiting for login form | title: '{driver.title}' | URL: {driver.current_url}")
-            return None
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                title = driver.title
+                if '521' in title or '520' in title or '522' in title or '503' in title:
+                    logger.warning(f"Server error: '{title}'")
+                    return None
+                fields = driver.find_elements(By.NAME, 'login_username')
+                if fields:
+                    logger.info(f"Login form appeared after extra wait | title: '{title}'")
+                    break
+                time.sleep(2)
+            else:
+                logger.warning(f"Login form not found | title: '{driver.title}' | URL: {driver.current_url}")
+                return None
 
         username_field = driver.find_element(By.NAME, 'login_username')
         password_field = driver.find_element(By.NAME, 'login_password')
         login_btn = driver.find_element(By.NAME, 'login')
 
-        # Verify this is the real Rutracker form, not a Cloudflare honeypot
         page_src = driver.page_source
         if 'rutracker.org' not in page_src.lower() or 'login_username' not in page_src:
             logger.warning("Form found but page doesn't look like Rutracker login")
             return None
 
-        # JavaScript fill — bypasses Cloudflare overlays that block send_keys
         driver.execute_script("arguments[0].value = arguments[1]", username_field, login_username)
         driver.execute_script("arguments[0].value = arguments[1]", password_field, login_password)
         driver.execute_script("arguments[0].click()", login_btn)
 
-        # Wait for redirect away from login page
-        WebDriverWait(driver, 30).until(lambda d: 'login.php' not in d.current_url)
-        logger.info(f"Logged into Rutracker | URL: {driver.current_url}")
+        time.sleep(2)
+        try:
+            driver.execute_script("window.location.href = 'https://rutracker.org/forum/index.php'")
+        except Exception as exc:
+            logger.info(f"CAUGHT nav: {type(exc).__name__}: {str(exc)[:80]}")
+
+        deadline = time.time() + 30
+        current_url = ''
+        while time.time() < deadline:
+            try:
+                current_url = driver.current_url
+                if 'login.php' not in current_url:
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+
+        if 'login.php' in current_url:
+            logger.warning(f"Still on login page after attempt | URL: {current_url}")
+            try:
+                driver.execute_script("window.stop()")
+            except Exception:
+                pass
+            return None
+
+        logger.info(f"Logged into Rutracker | URL: {current_url}")
+        driver.set_page_load_timeout(120)
         return driver
 
-    except TimeoutException:
-        logger.warning(f"Redirect timed out after login | URL: {driver.current_url if driver else '?'}")
+    except TimeoutException as e:
+        logger.info(f"Login TimeoutException (may still have worked): {str(e)[:80]}")
         if driver:
-            driver.quit()
+            try:
+                driver.execute_script("window.stop()")
+            except Exception:
+                pass
+            try:
+                current_url = driver.current_url
+                if 'login.php' not in current_url:
+                    logger.info(f"Recovered after timeout | URL: {current_url}")
+                    return driver
+            except Exception:
+                pass
         return None
     except Exception as e:
         logger.warning(f"Login attempt error: {e}")
-        if driver:
-            driver.quit()
         return None
 
 def is_series_complete(text: str) -> bool:
@@ -349,7 +348,7 @@ def is_series_complete(text: str) -> bool:
         return True
     return False
 
-def is_torrent_updated(url: str, torrent_date: datetime.datetime, session: uc.Chrome, max_retries: int = 3) -> tuple[bool, str, str, str, bool]:
+def is_torrent_updated(url: str, torrent_date: datetime.datetime, session: WebDriver, max_retries: int = 3) -> tuple[bool, str, str, str, bool]:
     """Checks if the torrent on the tracker is newer than the local one. Retries on failure.
     Returns: (is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete)
     """
@@ -366,17 +365,17 @@ def is_torrent_updated(url: str, torrent_date: datetime.datetime, session: uc.Ch
             time.sleep(wait_sec)
     return (False, "", "", last_error, False)
 
-def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: uc.Chrome) -> tuple[bool, str, str, str, bool]:
+def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDriver) -> tuple[bool, str, str, str, bool]:
     """Returns: (is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete)
     is_season_complete: True when the rutracker page title contains e.g. 'Серии: 1-8 из 8'
     """
     try:
         driver = session  # session IS the Chrome driver
-        driver.get(url)
+        driver.execute_script("window.location.href = arguments[0]", url)
 
         # Wait for readyState then a bit more for JS rendering
         try:
-            WebDriverWait(driver, 10).until(
+            WebDriverWait(driver, 30).until(
                 lambda d: d.execute_script('return document.readyState') == 'complete'
             )
         except TimeoutException:
@@ -468,23 +467,47 @@ def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: uc.Ch
         logger.error(f"Error checking update for {url}: {e}")
         return (False, "", "", f"Исключение: {str(e)[:60]}", False)
 
-def download_and_add_torrent(url: str, session: uc.Chrome, to_dir: str, tr: Client, max_retries: int = 3) -> bool:
+def download_and_add_torrent(url: str, session: WebDriver, to_dir: str, tr: Client, max_retries: int = 3) -> bool:
     """Downloads the torrent file using the authenticated Chrome driver and adds it to Transmission."""
-    import tempfile, glob
     driver = session
 
     for attempt in range(1, max_retries + 1):
         try:
-            driver.get(url)
-            WebDriverWait(driver, 10).until(
-                lambda d: d.execute_script('return document.readyState') == 'complete'
-            )
+            # Navigate via JS to avoid page_load_timeout blocking
+            try:
+                driver.execute_script("window.location.href = arguments[0]", url)
+            except Exception as exc:
+                logger.info(f"Nav exec error: {type(exc).__name__}")
 
-            if 'login.php' in driver.current_url:
+            # Poll current_url — works even if renderer is hung
+            current_url = ''
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                try:
+                    current_url = driver.current_url
+                    if current_url and ('login.php' in current_url or 'viewtopic.php' in current_url):
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
+
+            if 'login.php' in current_url:
                 logger.error("Session expired during download attempt")
                 return False
 
-            soup = BeautifulSoup(driver.page_source, 'lxml')
+            # Get page source — stop renderer first if needed
+            try:
+                page_html = driver.page_source
+            except Exception as exc:
+                logger.info(f"page_source error: {type(exc).__name__}")
+                try:
+                    driver.execute_script("window.stop()")
+                    time.sleep(1)
+                    page_html = driver.page_source
+                except Exception:
+                    page_html = ''
+
+            soup = BeautifulSoup(page_html, 'lxml')
             download_link = soup.find('a', href=lambda h: h and 'dl.php?t=' in h)
             if not download_link:
                 logger.warning(f"Could not find download link for {url} (attempt {attempt}/{max_retries})")
@@ -499,13 +522,55 @@ def download_and_add_torrent(url: str, session: uc.Chrome, to_dir: str, tr: Clie
 
             logger.info(f"Downloading .torrent from {download_url}")
 
-            # Use requests with cookies from the driver to download the file
-            cookies = {c['name']: c['value'] for c in driver.get_cookies()}
-            headers = {'User-Agent': driver.execute_script('return navigator.userAgent')}
-            torrent_resp = requests.get(download_url, cookies=cookies, headers=headers, timeout=30)
+            # Use the browser's fetch API to download — bypasses Cloudflare via UC patches
+            result = driver.execute_script("""
+                return fetch(arguments[0], {credentials: 'include'})
+                    .then(r => {
+                        if (!r.ok) return 'HTTP_' + r.status;
+                        return r.arrayBuffer().then(buf => {
+                            var bytes = new Uint8Array(buf);
+                            var binary = '';
+                            for (var i = 0; i < bytes.length; i++) {
+                                binary += String.fromCharCode(bytes[i]);
+                            }
+                            return btoa(binary);
+                        });
+                    })
+                    .catch(e => 'FETCH_ERR: ' + e.message);
+            """, download_url)
 
-            if torrent_resp.status_code != 200:
-                logger.warning(f"Torrent download returned {torrent_resp.status_code} (attempt {attempt}/{max_retries})")
+            if result is None:
+                logger.warning("Fetch returned None")
+                if attempt < max_retries:
+                    time.sleep(random.uniform(5, 15))
+                    continue
+                return False
+
+            if isinstance(result, str) and result.startswith('HTTP_'):
+                status_code = int(result.split('_')[1])
+                logger.warning(f"Torrent download returned {status_code} via fetch (attempt {attempt}/{max_retries})")
+                if attempt < max_retries:
+                    time.sleep(random.uniform(5, 15))
+                    continue
+                return False
+
+            if isinstance(result, str) and result.startswith('FETCH_ERR'):
+                logger.warning(f"Fetch error: {result} (attempt {attempt}/{max_retries})")
+                if attempt < max_retries:
+                    time.sleep(random.uniform(5, 15))
+                    continue
+                return False
+
+            torrent_data = base64.b64decode(result)
+
+            logger.info(f"Adding torrent: {len(torrent_data)} bytes | first 20: {torrent_data[:20]}")
+            try:
+                new_torrent = tr.add_torrent(torrent_data, download_dir=to_dir)
+                tr.change_torrent(new_torrent.id, comment=url)
+                logger.info(f"Torrent added to Transmission (id={new_torrent.id}, comment set)")
+                return True
+            except Exception as add_err:
+                logger.warning(f"tr.add_torrent error: {type(add_err).__name__}: {add_err}")
                 if attempt < max_retries:
                     time.sleep(random.uniform(5, 15))
                     continue
@@ -583,107 +648,117 @@ if __name__ == "__main__":
             status_manager.update_status("idle")
             return
 
-        session = create_session(LOGIN_RUTRACKER, PASSWORD_RUTRACKER)
-        if not session:
-            # All attempts exhausted — retry in 15 min instead of waiting the full scheduled cycle
-            logger.warning("Login failed completely. Will retry in 15 minutes.")
-            status_manager.update_status("idle")
-            def _retry_soon():
-                time.sleep(15 * 60)
-                check_and_update_torrents()
-            threading.Thread(target=_retry_soon, daemon=True).start()
-            return
+        with SB(uc=True, xvfb=True) as sb:
+            session = create_session(sb, LOGIN_RUTRACKER, PASSWORD_RUTRACKER)
+            if not session:
+                logger.warning("Login failed completely. Will retry in 15 minutes.")
+                status_manager.update_status("idle")
+                def _retry_soon():
+                    time.sleep(15 * 60)
+                    check_and_update_torrents()
+                threading.Thread(target=_retry_soon, daemon=True).start()
+                return
 
-        try:
-            torrents = tr.get_torrents()
-            rutracker_torrents = [
-                t for t in torrents
-                if t.percent_complete == 1
-                and t.comment
-                and 'rutracker.org' in t.comment
-            ]
-            logger.info(f"Checking {len(rutracker_torrents)} torrents...")
+            try:
+                torrents = tr.get_torrents()
+                rutracker_torrents = [
+                    t for t in torrents
+                    if t.percent_complete == 1
+                    and t.comment
+                    and 'rutracker.org' in t.comment
+                ]
+                logger.info(f"Checking {len(rutracker_torrents)} torrents...")
 
-            # Note: season completion is now detected from the rutracker page title
-            # during process_torrent(), so no pre-filtering by local name needed here.
+                # Note: season completion is now detected from the rutracker page title
+                # during process_torrent(), so no pre-filtering by local name needed here.
 
-            def process_torrent(torrent):
-                torrent_url = torrent.comment
-                torrent_date_ts = getattr(torrent, 'date_created', getattr(torrent, 'dateCreated', 0))
-                if not torrent_date_ts:
-                    torrent_date_ts = getattr(torrent, 'added_date', 0)
-                if isinstance(torrent_date_ts, datetime.datetime):
-                    torrent_date = torrent_date_ts
-                else:
-                    torrent_date = datetime.datetime.fromtimestamp(int(torrent_date_ts))
-
-                is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete = is_torrent_updated(torrent_url, torrent_date, session)
-
-                if not local_date_str and not tracker_date_str:
-                    status_manager.record_torrent_check(torrent.name, '?', '?', 'error', error_msg=error_msg)
-                    return None
-
-                if is_updated:
-                    if is_season_complete:
-                        # Final episode just dropped — download it first, THEN remove on next cycle
-                        logger.info(f"Season complete + update available: will download final episode first: {torrent.name}")
-                        return ('update', torrent, torrent_url, local_date_str, tracker_date_str)
+                def process_torrent(torrent):
+                    torrent_url = torrent.comment
+                    torrent_date_ts = getattr(torrent, 'date_created', getattr(torrent, 'dateCreated', 0))
+                    if not torrent_date_ts:
+                        torrent_date_ts = getattr(torrent, 'added_date', 0)
+                    if isinstance(torrent_date_ts, datetime.datetime):
+                        torrent_date = torrent_date_ts
                     else:
-                        return ('update', torrent, torrent_url, local_date_str, tracker_date_str)
-                else:
-                    if is_season_complete:
-                        # Already have all episodes locally — safe to stop tracking
-                        return ('season_complete', torrent, torrent_url, local_date_str, tracker_date_str)
-                    logger.info(f"Up-to-date: {torrent.name} (local: {local_date_str}, tracker: {tracker_date_str})")
-                    status_manager.record_torrent_check(torrent.name, local_date_str, tracker_date_str, 'ok')
-                    return None
+                        torrent_date = datetime.datetime.fromtimestamp(int(torrent_date_ts))
 
-            results = []
-            for torrent in rutracker_torrents:
-                results.append(process_torrent(torrent))
+                    is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete = is_torrent_updated(torrent_url, torrent_date, session)
 
-            # Handle completed seasons — remove from Transmission without re-downloading
-            for r in results:
-                if r is not None and r[0] == 'season_complete':
-                    _, torrent, torrent_url, local_date_str, tracker_date_str = r
+                    if not local_date_str and not tracker_date_str:
+                        status_manager.record_torrent_check(torrent.name, '?', '?', 'error', error_msg=error_msg, torrent_url=torrent_url)
+                        return None
+
+                    if is_updated:
+                        if is_season_complete:
+                            # Final episode just dropped — download it first, THEN remove on next cycle
+                            logger.info(f"Season complete + update available: will download final episode first: {torrent.name}")
+                            return ('update', torrent, torrent_url, local_date_str, tracker_date_str)
+                        else:
+                            return ('update', torrent, torrent_url, local_date_str, tracker_date_str)
+                    else:
+                        if is_season_complete:
+                            # Already have all episodes locally — safe to stop tracking
+                            return ('season_complete', torrent, torrent_url, local_date_str, tracker_date_str)
+                        logger.info(f"Up-to-date: {torrent.name} (local: {local_date_str}, tracker: {tracker_date_str})")
+                        status_manager.record_torrent_check(torrent.name, local_date_str, tracker_date_str, 'ok', torrent_url=torrent_url)
+                        return None
+
+                results = []
+                for torrent in rutracker_torrents:
+                    results.append(process_torrent(torrent))
+
+                # Handle completed seasons — remove from Transmission without re-downloading
+                for r in results:
+                    if r is not None and r[0] == 'season_complete':
+                        _, torrent, torrent_url, local_date_str, tracker_date_str = r
+                        try:
+                            tr.remove_torrent(torrent.id)
+                            status_manager.record_torrent_check(torrent.name, local_date_str, tracker_date_str, 'season_complete',
+                                error_msg='Сезон завершён, удалён из Transmission', torrent_url=torrent_url)
+                            send_telegram_notification(
+                                torrent_name=torrent.name,
+                                torrent_url=torrent_url,
+                                local_date=local_date_str,
+                                tracker_date=tracker_date_str,
+                                success=True,
+                                custom_message='\U0001f3c1 Сезон завершён, сериал скачан полностью'
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to remove completed season {torrent.name}: {e}")
+
+                # Filter results that need updating
+                updates_to_perform = [r[1:] for r in results if r is not None and r[0] == 'update']
+                
+                for torrent, torrent_url, local_date_str, tracker_date_str in updates_to_perform:
+                    logger.info(f"Update available for {torrent.name}. Updating...")
+                    status_manager.update_status("updating")
+
                     try:
-                        tr.remove_torrent(torrent.id)
-                        status_manager.record_torrent_check(torrent.name, local_date_str, tracker_date_str, 'ok',
-                            error_msg='Сезон завершён, удалён из Transmission')
-                        send_telegram_notification(
-                            torrent_name=torrent.name,
-                            torrent_url=torrent_url,
-                            local_date=local_date_str,
-                            tracker_date=tracker_date_str,
-                            success=True,
-                            custom_message='🏁 Сезон завершён, сериал скачан полностью'
-                        )
+                        # Download new torrent FIRST — only remove old one if download succeeds
+                        if download_and_add_torrent(torrent_url, session, torrent.download_dir, tr):
+                            tr.remove_torrent(torrent.id)
+                            logger.info("Update successful.")
+                            status_manager.record_update(torrent.name, local_date_str, tracker_date_str, True, torrent_url=torrent_url)
+                            send_telegram_notification(
+                                torrent_name=torrent.name,
+                                torrent_url=torrent_url,
+                                local_date=local_date_str,
+                                tracker_date=tracker_date_str,
+                                success=True
+                            )
+                        else:
+                            logger.error("Failed to download new torrent — old torrent kept intact.")
+                            status_manager.record_update(torrent.name, local_date_str, tracker_date_str, False, torrent_url=torrent_url)
+                            send_telegram_notification(
+                                torrent_name=torrent.name,
+                                torrent_url=torrent_url,
+                                local_date=local_date_str,
+                                tracker_date=tracker_date_str,
+                                success=False
+                            )
                     except Exception as e:
-                        logger.error(f"Failed to remove completed season {torrent.name}: {e}")
-
-            # Filter results that need updating
-            updates_to_perform = [r[1:] for r in results if r is not None and r[0] == 'update']
-            
-            for torrent, torrent_url, local_date_str, tracker_date_str in updates_to_perform:
-                logger.info(f"Update available for {torrent.name}. Updating...")
-                status_manager.update_status("updating")
-
-                try:
-                    # Download new torrent FIRST — only remove old one if download succeeds
-                    if download_and_add_torrent(torrent_url, session, torrent.download_dir, tr):
-                        tr.remove_torrent(torrent.id)
-                        logger.info("Update successful.")
-                        status_manager.record_update(torrent.name, local_date_str, tracker_date_str, True)
-                        send_telegram_notification(
-                            torrent_name=torrent.name,
-                            torrent_url=torrent_url,
-                            local_date=local_date_str,
-                            tracker_date=tracker_date_str,
-                            success=True
-                        )
-                    else:
-                        logger.error("Failed to download new torrent — old torrent kept intact.")
-                        status_manager.record_update(torrent.name, local_date_str, tracker_date_str, False)
+                        logger.error(f"Error during update process: {e}")
+                        status_manager.record_update(torrent.name, local_date_str, tracker_date_str, False, torrent_url=torrent_url)
                         send_telegram_notification(
                             torrent_name=torrent.name,
                             torrent_url=torrent_url,
@@ -691,28 +766,13 @@ if __name__ == "__main__":
                             tracker_date=tracker_date_str,
                             success=False
                         )
-                except Exception as e:
-                    logger.error(f"Error during update process: {e}")
-                    status_manager.record_update(torrent.name, local_date_str, tracker_date_str, False)
-                    send_telegram_notification(
-                        torrent_name=torrent.name,
-                        torrent_url=torrent_url,
-                        local_date=local_date_str,
-                        tracker_date=tracker_date_str,
-                        success=False
-                    )
 
-                status_manager.update_status("checking")
+                    status_manager.update_status("checking")
 
-        except Exception as e:
-            logger.error(f"Error in check loop: {e}")
-        finally:
-            # Always close Chrome driver to free resources
-            try:
-                session.quit()
-            except Exception:
-                pass
-            status_manager.update_status("idle")
-            logger.info("--- Check Cycle Finished ---")
+            except Exception as e:
+                logger.error(f"Error in check loop: {e}")
+            finally:
+                status_manager.update_status("idle")
+                logger.info("--- Check Cycle Finished ---")
 
     main()

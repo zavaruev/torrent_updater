@@ -274,6 +274,17 @@
             min-width: 0;
         }
 
+        a.torrent-link {
+            color: var(--ink);
+            text-decoration: none;
+            border-bottom: 1px dashed transparent;
+            transition: border-color 0.15s ease, color 0.15s ease;
+        }
+        a.torrent-link:hover {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+        }
+
         .torrent-time {
             font-size: 12px;
             font-weight: 400;
@@ -308,6 +319,11 @@
         .badge-error {
             color: var(--error);
             background: var(--error-bg);
+        }
+
+        .badge-season-complete {
+            color: #9a6700;
+            background: #fef3c7;
         }
 
         .empty-state {
@@ -561,9 +577,10 @@
 
         function renderRow(item) {
             const badges = {
-                ok:      '<span class="badge badge-ok">Up to date</span>',
-                updated: '<span class="badge badge-updated">Updated</span>',
-                error:   '<span class="badge badge-error">Error</span>',
+                ok:               '<span class="badge badge-ok">Up to date</span>',
+                updated:          '<span class="badge badge-updated">Updated</span>',
+                error:            '<span class="badge badge-error">Error</span>',
+                season_complete:  '<span class="badge badge-season-complete">Season complete</span>',
             };
             const badge = badges[item.state] || `<span class="badge">${item.state}</span>`;
 
@@ -572,7 +589,7 @@
 
             return `
                 <div class="torrent-row" title="${escHtml(item.torrent)}${dates ? '\n' + dates : ''}">
-                    <div class="torrent-name">${escHtml(truncate(item.torrent, 65))}</div>
+                    <div class="torrent-name">${item.torrent_url ? `<a class="torrent-link" href="${escHtml(item.torrent_url)}" target="_blank" rel="noopener">${escHtml(truncate(item.torrent, 65))}</a>` : escHtml(truncate(item.torrent, 65))}</div>
                     <div class="torrent-time">${item.time || ''}</div>
                     ${badge}
                 </div>`;
@@ -582,7 +599,7 @@
             const msg = item.error_msg || 'No data';
             return `
                 <div class="torrent-row" title="${escHtml(item.torrent)}\n${escHtml(msg)}">
-                    <div class="torrent-name" style="color:var(--error)">${escHtml(truncate(item.torrent, 50))}</div>
+                    <div class="torrent-name" style="color:var(--error)">${item.torrent_url ? `<a class="torrent-link" href="${escHtml(item.torrent_url)}" target="_blank" rel="noopener" style="color:var(--error)">${escHtml(truncate(item.torrent, 50))}</a>` : escHtml(truncate(item.torrent, 50))}</div>
                     <div class="torrent-time" style="color:var(--error)">${escHtml(truncate(msg, 35))}</div>
                     <span class="badge badge-error">Error</span>
                 </div>`;
