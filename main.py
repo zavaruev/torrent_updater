@@ -365,29 +365,6 @@ def is_torrent_updated(url: str, torrent_date: datetime.datetime, session: WebDr
             time.sleep(wait_sec)
     return (False, "", "", last_error, False)
 
-def _cdp_navigate(url: str, driver: WebDriver, timeout: int = 30) -> bool:
-    """Navigate via CDP with a timeout. Returns True if navigate cmd was sent."""
-    try:
-        driver.execute_cdp_cmd("Page.stopLoading", {})
-    except Exception:
-        pass
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        fut = pool.submit(driver.execute_cdp_cmd, "Page.navigate", {"url": url})
-        try:
-            fut.result(timeout=timeout)
-            return True
-        except concurrent.futures.TimeoutError:
-            logger.info(f"CDP navigate timed out after {timeout}s")
-            try:
-                driver.execute_cdp_cmd("Page.stopLoading", {})
-            except Exception:
-                pass
-            return False
-        except Exception as exc:
-            logger.info(f"CDP navigate error: {exc}")
-            return False
-
 def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDriver) -> tuple[bool, str, str, str, bool]:
     """Returns: (is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete)
     is_season_complete: True when the rutracker page title contains e.g. 'Серии: 1-8 из 8'
@@ -395,19 +372,23 @@ def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDr
     try:
         driver = session  # session IS the WebDriver from sb.connect()
 
-        if not _cdp_navigate(url, driver):
-            return (False, "", "", "CDP navigate timed out", False)
-
+        # Navigate via JS — returns immediately, page load async
+        try:
+            driver.execute_script("window.location.href = arguments[0]", url)
+        except Exception as exc:
+            logger.info(f"Nav exec error: {type(exc).__name__}")
         time.sleep(1)
 
-        # Stop loading to prevent Cloudflare/Chrome hang
         try:
-            driver.execute_cdp_cmd("Page.stopLoading", {})
-        except Exception:
-            pass
-        time.sleep(0.5)
-
-        page_source = driver.page_source
+            page_source = driver.page_source
+        except Exception as exc:
+            logger.info(f"page_source error: {type(exc).__name__}")
+            try:
+                driver.execute_script("window.stop()")
+                time.sleep(1)
+                page_source = driver.page_source
+            except Exception:
+                return (False, "", "", f"Не удалось загрузить страницу: {exc}", False)
         soup = BeautifulSoup(page_source, 'lxml')
         title_text = soup.find('title')
         title_text = title_text.get_text(strip=True) if title_text else '?'
@@ -498,9 +479,12 @@ def download_and_add_torrent(url: str, session: WebDriver, to_dir: str, tr: Clie
 
     for attempt in range(1, max_retries + 1):
         try:
-            _cdp_navigate(url, driver)
+            try:
+                driver.execute_script("window.location.href = arguments[0]", url)
+            except Exception as exc:
+                logger.info(f"Nav exec error: {type(exc).__name__}")
 
-            # Poll current_url — works even if renderer is hung
+            # Poll current_url
             current_url = ''
             deadline = time.time() + 30
             while time.time() < deadline:
@@ -515,13 +499,6 @@ def download_and_add_torrent(url: str, session: WebDriver, to_dir: str, tr: Clie
             if 'login.php' in current_url:
                 logger.error("Session expired during download attempt")
                 return False
-
-            # Stop loading before reading page source
-            try:
-                driver.execute_cdp_cmd("Page.stopLoading", {})
-            except Exception:
-                pass
-            time.sleep(0.5)
 
             try:
                 page_html = driver.page_source
