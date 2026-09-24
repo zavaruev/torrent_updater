@@ -285,6 +285,7 @@ def _search_and_download_blocking(query: str, content_type: str, season, imdb_id
         search_best_torrent,
         download_url_and_add_to_transmission,
         verify_jellyfin,
+        detect_content_kind,
     )
     from rutracker_scraper import RutrackerScraper
 
@@ -310,9 +311,17 @@ def _search_and_download_blocking(query: str, content_type: str, season, imdb_id
             logger.warning(f"Search failed: {e}")
             return {"success": False, "error": f"No results found: {e}"}
 
-        # Download and add to Transmission
-        download_dir = '/movies' if content_type == 'movie' else '/series'
-        success = download_url_and_add_to_transmission(sb, driver, best.url, download_dir, tr_host, tr_port, tr_user, tr_password)
+        # Route by detected content kind (filter passes everything now):
+        # series -> /series, movies -> /movies, with labels for Jellyfin.
+        kind = detect_content_kind(best)
+        download_dir = '/series' if kind == 'series' else '/movies'
+        labels = ["series", "auto"] if kind == 'series' else ["movie", "auto"]
+        if kind == 'series' and season:
+            labels.append(f"S{season:02d}")
+        if imdb_id:
+            labels.append(f"imdb_{imdb_id}")
+        logger.info(f"Detected kind={kind}, dir={download_dir} for: {best.title[:60]}")
+        success = download_url_and_add_to_transmission(sb, driver, best.url, download_dir, tr_host, tr_port, tr_user, tr_password, labels=labels)
 
         if not success:
             return {"success": False, "error": "Failed to download and add torrent"}
@@ -321,6 +330,7 @@ def _search_and_download_blocking(query: str, content_type: str, season, imdb_id
             "title": best.title, "url": best.url, "quality": best.quality,
             "dub_studio": best.dub_studio, "seeders": best.seeders,
             "size_gb": round(best.size_bytes / 1024 ** 3, 2),
+            "kind": kind, "download_dir": download_dir,
         }}
 
         # Verify in Jellyfin if requested

@@ -410,7 +410,7 @@ def search_best_torrent(query: str, is_series: bool, season: int = None, imdb_id
             raise RuntimeError(f"No suitable torrents found for: {query}")
 
         # Score and pick best
-        best = max(filtered, key=score_torrent)
+        best = max(filtered, key=lambda t: score_torrent(t, season))
         logger.info(f"Best torrent: {best.title} | {best.quality} | {best.dub_studio} | {best.seeders} seeders | {best.size_bytes/1024**3:.2f} GB")
         return best
     finally:
@@ -437,7 +437,21 @@ def extract_season_episode(title: str):
     return None, None
 
 
-def score_torrent(torrent: RutrackerTorrent) -> int:
+def detect_content_kind(torrent: RutrackerTorrent) -> str:
+    """'series' or 'movie' by forum section first, title markers fallback.
+    Used to route downloads into /series vs /movies regardless of the
+    requested search type — the filter passes everything, folders decide."""
+    if torrent.forum_id == 1803:
+        return 'series'
+    if torrent.forum_id == 252:
+        return 'movie'
+    tl = (torrent.title or '').lower()
+    if re.search(r'сезон|серии|season|episodes?|\bs\d{1,2}\b', tl):
+        return 'series'
+    return 'movie'
+
+
+def score_torrent(torrent: RutrackerTorrent, season: int = None) -> int:
     """Score torrent for quality. Higher = better."""
     score = 0
 
@@ -476,6 +490,15 @@ def score_torrent(torrent: RutrackerTorrent) -> int:
     size_gb = torrent.size_bytes / 1024**3
     if 1.5 <= size_gb <= 30:
         score += 10
+
+    # Requested season match wins over everything (series queries).
+    if season:
+        try:
+            t_season, _ = extract_season_episode(torrent.title)
+            if t_season == season:
+                score += 200
+        except Exception:
+            pass
 
     return score
 
@@ -666,7 +689,8 @@ def select_best_torrent(results, content_type: str, season: int = None):
 
 
 def download_url_and_add_to_transmission(sb, driver, torrent_url: str, download_dir: str,
-                                      tr_host: str, tr_port: int, tr_user: str, tr_password: str) -> bool:
+                                      tr_host: str, tr_port: int, tr_user: str, tr_password: str,
+                                      labels=None) -> bool:
     """Wrapper for on-demand download used by API."""
     from seleniumbase import SB
     from selenium.webdriver.common.by import By
@@ -721,7 +745,7 @@ def download_url_and_add_to_transmission(sb, driver, torrent_url: str, download_
         if not tr.connect():
             raise RuntimeError('Failed to connect to Transmission')
 
-        result = tr.add_torrent(torrent_data, download_dir)
+        result = tr.add_torrent(torrent_data, download_dir, labels=(labels or []))
         if not result.success:
             raise RuntimeError(f'Failed to add to Transmission: {result.error}')
 
