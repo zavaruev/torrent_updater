@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""
+Transmission torrent addition module.
+Adds torrents to Transmission with correct download directories.
+"""
+
+import logging
+import requests
+from typing import Optional, Dict, Any
+from transmission_rpc import Client
+from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
+# Download directories (inside Transmission container)
+MOVIES_DOWNLOAD_DIR = "/movies"      # Maps to /mnt/media/movies on host
+SERIES_DOWNLOAD_DIR = "/series"      # Maps to /mnt/media/series on host
+
+TRANSMISSION_HOST = "192.0.2.10"
+TRANSMISSION_PORT = 9091
+TRANSMISSION_USER = "user"
+TRANSMISSION_PASSWORD = "'<REDACTED>'"  # Password includes quotes
+
+
+@dataclass
+class TorrentAddResult:
+    """Result of adding a torrent."""
+    success: bool
+    torrent_id: Optional[int] = None
+    name: Optional[str] = None
+    error: Optional[str] = None
+
+
+class TransmissionManager:
+    """Manages Transmission torrent additions."""
+
+    def __init__(self, host: str = TRANSMISSION_HOST, port: int = TRANSMISSION_PORT,
+                 username: str = TRANSMISSION_USER, password: str = TRANSMISSION_PASSWORD):
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self._client = None
+
+    def connect(self) -> bool:
+        """Connect to Transmission RPC."""
+        try:
+            self._client = Client(
+                host=self.host,
+                port=self.port,
+                username=self.username,
+                password=self.password,
+                timeout=30
+            )
+            # Test connection
+            self._client.get_session()
+            logger.info("Connected to Transmission RPC")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to connect to Transmission: {e}")
+            return False
+
+    def add_torrent(self, torrent_data: bytes, download_dir: str, 
+                    paused: bool = False, labels: Optional[list] = None) -> TorrentAddResult:
+        """Add torrent from raw data (magnet or .torrent file)."""
+        if not self._client:
+            if not self.connect():
+                return TorrentAddResult(success=False, error="Not connected to Transmission")
+
+        try:
+            torrent = self._client.add_torrent(
+                torrent=torrent_data,
+                download_dir=download_dir,
+                paused=paused,
+                labels=labels or []
+            )
+            logger.info(f"Added torrent: {torrent.name} (ID: {torrent.id}) to {download_dir}")
+            return TorrentAddResult(success=True, torrent_id=torrent.id, name=torrent.name)
+        except Exception as e:
+            logger.error(f"Failed to add torrent: {e}")
+            return TorrentAddResult(success=False, error=str(e))
+
+    def add_torrent_from_url(self, url: str, download_dir: str,
+                             paused: bool = False, labels: Optional[list] = None) -> TorrentAddResult:
+        """Add torrent from magnet link or torrent URL."""
+        if not self._client:
+            if not self.connect():
+                return TorrentAddResult(success=False, error="Not connected to Transmission")
+
+        try:
+            torrent = self._client.add_torrent(
+                torrent=url,
+                download_dir=download_dir,
+                paused=paused,
+                labels=labels or []
+            )
+            logger.info(f"Added torrent from URL: {torrent.name} (ID: {torrent.id}) to {download_dir}")
+            return TorrentAddResult(success=True, torrent_id=torrent.id, name=torrent.name)
+        except Exception as e:
+            logger.error(f"Failed to add torrent from URL: {e}")
+            return TorrentAddResult(success=False, error=str(e))
+
+    def download_torrent_file(self, rutracker_url: str, cookies: Dict[str, str] = None, login: str = None, password: str = None) -> Optional[bytes]:
+        """Download .torrent file from Rutracker using session cookies or credentials."""
+        # Extract topic ID
+        import re
+        match = re.search(r't=(\d+)', rutracker_url)
+        if not match:
+            return None
+        
+        topic_id = match.group(1)
+        download_url = f"https://rutracker.org/forum/dl.php?t={topic_id}"
+        
+        # Use bb_data cookie format (like torrent_updater) if credentials provided
+        if login and password:
+            login_len = len(login)
+            pass_len = len(password)
+            # PHP serialized array: a:2:{s:11:"login_username";s:X:"USER";s:11:"login_password";s:Y:"PASS";}
+            # URL-encode the structure but NOT the credentials (match torrent_updater exactly)
+            bb_data = (
+                'a%3A2%3A%7Bs%3A11%3A%22login_username%22%3Bs%3A' + str(login_len) + 
+                '%3A%22' + login + '%22%3Bs%3A11%3A%22login_password%22%3Bs%3A' + 
+                str(pass_len) + '%3A%22' + password + '%22%3B%7D'
+            )
+            cookies = {'bb_data': bb_data}
+        elif not cookies:
+            return None
+        
+        try:
+            resp = requests.get(
+                download_url,
+                cookies=cookies,
+                headers={'Referer': rutracker_url},
+                timeout=30
+            )
+            if resp.status_code == 200 and resp.headers.get('Content-Type', '').startswith('application/x-bittorrent'):
+                return resp.content
+            else:
+                logger.warning(f"Failed to download torrent file: {resp.status_code} - {resp.headers.get('Content-Type')}")
+        except Exception as e:
+            logger.error(f"Error downloading torrent file: {e}")
+        
+        return None
+
+    def get_torrents(self) -> list:
+        """Get all torrents."""
+        if not self._client:
+            if not self.connect():
+                return []
+        try:
+            return self._client.get_torrents()
+        except Exception as e:
+            logger.error(f"Failed to get torrents: {e}")
+            return []
+
+    def remove_torrent(self, torrent_id: int, delete_data: bool = False) -> bool:
+        """Remove torrent from Transmission."""
+        if not self._client:
+            if not self.connect():
+                return False
+        try:
+            self._client.remove_torrent(torrent_id, delete_data=delete_data)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to remove torrent: {e}")
+            return False
+
+
+def add_movie_torrent(torrent_data: bytes, labels: Optional[list] = None) -> TorrentAddResult:
+    """Add movie torrent to /movies directory."""
+    manager = TransmissionManager()
+    if manager.connect():
+        return manager.add_torrent(torrent_data, MOVIES_DOWNLOAD_DIR, labels=labels or ["movie", "auto"])
+    return TorrentAddResult(success=False, error="Connection failed")
+
+
+def add_series_torrent(torrent_data: bytes, labels: Optional[list] = None) -> TorrentAddResult:
+    """Add series torrent to /series directory."""
+    manager = TransmissionManager()
+    if manager.connect():
+        return manager.add_torrent(torrent_data, SERIES_DOWNLOAD_DIR, labels=labels or ["series", "auto"])
+    return TorrentAddResult(success=False, error="Connection failed")
+
+
+def add_movie_torrent_from_url(url: str, labels: Optional[list] = None) -> TorrentAddResult:
+    """Add movie torrent from URL to /movies directory."""
+    manager = TransmissionManager()
+    if manager.connect():
+        return manager.add_torrent_from_url(url, MOVIES_DOWNLOAD_DIR, labels=labels or ["movie", "auto"])
+    return TorrentAddResult(success=False, error="Connection failed")
+
+
+def add_series_torrent_from_url(url: str, labels: Optional[list] = None) -> TorrentAddResult:
+    """Add series torrent from URL to /series directory."""
+    manager = TransmissionManager()
+    if manager.connect():
+        return manager.add_torrent_from_url(url, SERIES_DOWNLOAD_DIR, labels=labels or ["series", "auto"])
+    return TorrentAddResult(success=False, error="Connection failed")
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    
+    manager = TransmissionManager()
+    if manager.connect():
+        print("Connected to Transmission")
+        torrents = manager.get_torrents()
+        print(f"Current torrents: {len(torrents)}")
+        for t in torrents[:5]:
+            print(f"  ID:{t.id} {t.name[:60]} | {t.download_dir} | {t.status}")
+    else:
+        print("Failed to connect")

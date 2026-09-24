@@ -377,6 +377,20 @@
             border-radius: var(--radius-pill);
         }
         ::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); }
+        /* ── Search & recommendations (merged) ── */
+        .form-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; padding: 16px 18px 12px; }
+        @media (max-width: 640px) { .form-grid { grid-template-columns: 1fr; } }
+        .form-grid input, .form-grid select {
+            width: 100%; padding: 10px 14px; font: inherit; font-size: 14px;
+            color: var(--ink); background: var(--parchment);
+            border: 1px solid var(--hairline); border-radius: var(--radius-pill); outline: none;
+        }
+        .form-grid input:focus, .form-grid select:focus { border-color: var(--accent-focus); }
+        .form-actions { display: flex; gap: 10px; align-items: center; padding: 0 18px 16px; }
+        .form-status { font-size: 13px; color: var(--muted); }
+        .form-result { padding: 0 18px 16px; font-size: 14px; }
+        .form-result.success { color: var(--success); }
+        .form-result.error { color: var(--error); }
     </style>
 </head>
 <body>
@@ -421,6 +435,38 @@
         <div class="updates-banner" id="updates-banner">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
             <span id="updates-banner-text">Updates found</span>
+        </div>
+
+        <!-- On-demand search & download -->
+        <div class="section">
+            <div class="section-header">
+                <span class="section-title">Search & Download</span>
+            </div>
+            <form id="search-form" class="form-grid">
+                <input type="text" id="sq" placeholder="Title, e.g. The Simpsons" required>
+                <select id="st">
+                    <option value="movie">Movie</option>
+                    <option value="series">Series</option>
+                </select>
+                <input type="text" id="si" placeholder="IMDb ID (optional, e.g. tt0096697)">
+                <input type="number" id="ss" placeholder="Season (series only)" min="1">
+            </form>
+            <div class="form-actions">
+                <button class="btn" id="search-btn" type="submit" form="search-form">Search & Download</button>
+                <span class="form-status" id="search-status"></span>
+            </div>
+            <div class="form-result" id="search-result"></div>
+        </div>
+
+        <!-- Daily recommendations -->
+        <div class="section">
+            <div class="section-header">
+                <span class="section-title">Recommendations</span>
+                <span class="section-meta" id="rec-count"></span>
+            </div>
+            <div class="torrent-list" id="rec-list">
+                <div class="empty-state">Loading…</div>
+            </div>
         </div>
 
         <!-- Torrent list -->
@@ -636,6 +682,75 @@
                 .replace(/"/g,'&quot;');
         }
 
+        // ── Recommendations ──
+        async function loadRecommendations() {
+            const list = document.getElementById('rec-list');
+            try {
+                const res = await fetch('/api/recommendations');
+                const data = await res.json();
+                const items = [
+                    ...(data.movies || []).map(m => ({ ...m, kind: 'Movie' })),
+                    ...(data.series || []).map(s => ({ ...s, kind: 'S' + String(s.season || '').padStart(2, '0') })),
+                ];
+                document.getElementById('rec-count').textContent = items.length ? `${items.length} pcs.` : '';
+                if (!items.length) {
+                    list.innerHTML = '<div class="empty-state">No recommendations cached</div>';
+                    return;
+                }
+                list.innerHTML = items.map(m => {
+                    const title = `${m.title || '?'} (${m.year || 'N/A'})`;
+                    const meta = [`IMDb ${m.imdb_rating ?? '?'}`, `${m.seeders ?? '?'} seeders`, `${m.size_gb ?? '?'} GB`, m.quality, m.dub_studio].filter(Boolean).join(' • ');
+                    const name = m.rutracker_url
+                        ? `<a class="torrent-link" href="${escHtml(m.rutracker_url)}" target="_blank" rel="noopener">${escHtml(title)}</a>`
+                        : escHtml(title);
+                    return `<div class="torrent-row" title="${escHtml(title)}\n${escHtml(meta)}"><div class="torrent-name">${name}</div><div class="torrent-time">${escHtml(m.kind || '')}</div><span class="badge badge-ok">${escHtml(meta.split(' • ')[0] || '')}</span></div>`;
+                }).join('');
+            } catch (e) {
+                console.error(e);
+                list.innerHTML = '<div class="empty-state">Failed to load recommendations</div>';
+            }
+        }
+
+        // ── On-demand search ──
+        document.getElementById('search-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('search-btn');
+            const status = document.getElementById('search-status');
+            const result = document.getElementById('search-result');
+            btn.disabled = true;
+            status.textContent = 'Searching Rutracker…';
+            result.className = 'form-result';
+            result.textContent = '';
+            try {
+                const seasonVal = document.getElementById('ss').value;
+                const res = await fetch('/api/search-and-download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        query: document.getElementById('sq').value,
+                        type: document.getElementById('st').value,
+                        imdb_id: document.getElementById('si').value || null,
+                        season: seasonVal ? parseInt(seasonVal) : null,
+                    }),
+                });
+                const data = await res.json();
+                if (data.success) {
+                    result.className = 'form-result success';
+                    const t = data.torrent || {};
+                    result.textContent = `Added: ${t.title || data.message || 'OK'}` + (data.jellyfin_verified ? ' (Jellyfin verified)' : '');
+                } else {
+                    result.className = 'form-result error';
+                    result.textContent = `Error: ${data.error || 'unknown'}`;
+                }
+            } catch (err) {
+                result.className = 'form-result error';
+                result.textContent = `Request failed: ${err.message}`;
+            } finally {
+                btn.disabled = false;
+                status.textContent = '';
+            }
+        });
+
         // ── Check button ──
         const checkBtn = document.getElementById('check-btn');
 
@@ -647,7 +762,9 @@
         });
 
         updateStatus();
+        loadRecommendations();
         setInterval(updateStatus, 5000);
+        setInterval(loadRecommendations, 60000);
 
         // ── Theme toggle ──
         const themeBtn = document.getElementById('theme-btn');

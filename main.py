@@ -1,9 +1,37 @@
+"""Torrent auto-updater: Rutracker + Transmission, FastAPI UI on :6050.
+
+UNFINISHED (Cloudflare wall, Sep 2026) — read before touching login/search:
+  1. Bot Chrome gets an interactive Turnstile checkbox on topic/tracker pages
+     and the backend SILENTLY rejects the click (box stays empty). Clicks land
+     pixel-perfect (verified via screenshots), mouse moves human-like — still
+     rejected. Score factors: datacenter egress IP + automation fingerprint.
+     Fixed so far: WebGL (SwiftShader), chrome.runtime stub, deviceMemory->8,
+     headed 1920x1080, human mouse. See _cf_point_click() for the full story.
+  2. Session cookies (bb_session/bb_t) are VALID (proven over plain HTTP with
+     the same egress IP: index returns authed content). But the bot browser is
+     treated as guest on strict paths even with them. Session-only requests
+     work for index.php; viewtopic/tracker/search/dl.php need CF clearance.
+  3. cf_clearance is SHORT-LIVED (rotates <~1h). It must be fresh-minutes AND
+     a singleton in the jar: duplicates (site re-issues its own copy when it
+     rejects ours) make the server read the wrong one. See _try_cookie_login().
+  4. search_tracker() + query-word filter + tracker table parser are CODED
+     (see movie-recommender/) but have NEVER passed E2E — blocked by (1).
+     First green signal to watch for: 'Login form found' / tracker results.
+  5. What WORKED and must keep working: cookie session restore on index.php
+     ('Cookie session restored'), date-check parsing, season-complete removal,
+     download-before-delete update order, UI/API/recommendations.
+  6. Do NOT hammer: bursts escalate CF strictness. One session at a time,
+     20-30s pacing between navigations (already in check cycle).
+"""
+
 import os
 import time
 import logging
 import datetime
 import signal
 import sys
+sys.path.insert(0, "/opt/data/scripts/movie-recommender")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "movie-recommender"))
 import threading
 import concurrent.futures
 import random
@@ -28,6 +56,16 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+# Recommender is optional: daily recommendations are scheduled only if it imports.
+# A hard import here would kill the whole updater (incl. Transmission updates)
+# on systems without the recommender on sys.path.
+try:
+    from recommender import run_daily_recommendation as run_daily_recommendations
+    RECOMMENDER_AVAILABLE = True
+except Exception as _rec_err:
+    run_daily_recommendations = None
+    RECOMMENDER_AVAILABLE = False
+    _rec_import_error = str(_rec_err)
 # Load environment variables
 load_dotenv()
 
@@ -37,6 +75,8 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+if not RECOMMENDER_AVAILABLE:
+    logger.warning(f"Movie recommender unavailable, daily recommendations disabled: {_rec_import_error}")
 
 # Memory buffer for UI logs
 class LogBufferHandler(logging.Handler):
@@ -156,6 +196,163 @@ async def trigger_check():
     threading.Thread(target=check_and_update_torrents).start()
     return {"message": "Check triggered"}
 
+@app.get("/api/recommendations")
+async def get_recommendations():
+    """Get cached movie/series recommendations."""
+    import json
+    from pathlib import Path
+    
+    cache_file = Path("/opt/data/cache/movie_recommendations.json")
+    if cache_file.exists():
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error("Failed to read recommendations cache: " + str(e))
+    
+    return {"movies": [], "series": [], "timestamp": None}
+
+@app.post("/api/add-torrent")
+async def add_torrent(request: Request):
+    """Add torrent from Rutracker URL to Transmission."""
+    from transmission_rpc import Client
+    import requests
+    import re
+    
+    try:
+        data = await request.json()
+        rutracker_url = data.get('url')
+        content_type = data.get('type', 'movie')
+        
+        if not rutracker_url:
+            return {"success": False, "error": "URL is required"}
+        
+        download_dir = "/movies" if content_type == 'movie' else "/series"
+        labels = ["movie", "auto"] if content_type == 'movie' else ["series", "auto"]
+        
+        match = re.search(r't=(\d+)', rutracker_url)
+        if not match:
+            return {"success": False, "error": "Invalid Rutracker URL"}
+        
+        topic_id = match.group(1)
+        download_url = "https://rutracker.org/forum/dl.php?t=" + topic_id
+        
+        login_len = len(LOGIN_RUTRACKER)
+        pass_len = len(PASSWORD_RUTRACKER)
+        cookies = {
+            'bb_data': 'a%3A2%3A%7Bs%3A11%3A%22login_username%22%3Bs%3A' + str(login_len) + '%3A%22' + LOGIN_RUTRACKER + '%22%3Bs%3A11%3A%22login_password%22%3Bs%3A' + str(pass_len) + '%3A%22' + PASSWORD_RUTRACKER + '%22%3B%7D'
+        }
+        
+        resp = requests.get(
+            download_url,
+            cookies=cookies,
+            headers={'Referer': rutracker_url},
+            timeout=30
+        )
+        
+        if resp.status_code != 200 or not resp.headers.get('Content-Type', '').startswith('application/x-bittorrent'):
+            return {"success": False, "error": "Failed to download torrent: " + str(resp.status_code)}
+        
+        tr = Client(host=TR_HOST, port=TR_PORT, username=TR_USER, password=TR_PASSWORD)
+        try:
+            torrent = tr.add_torrent(
+                torrent=resp.content,
+                download_dir=download_dir,
+                paused=False,
+                labels=labels
+            )
+        except TypeError:
+            # Older transmission-rpc without `labels` support
+            torrent = tr.add_torrent(
+                torrent=resp.content,
+                download_dir=download_dir,
+                paused=False
+            )
+        
+        logger.info("Added " + content_type + " torrent: " + torrent.name + " (ID: " + str(torrent.id) + ") to " + download_dir)
+        return {"success": True, "torrent_id": torrent.id, "name": torrent.name}
+        
+    except Exception as e:
+        logger.error("Failed to add torrent: " + str(e))
+        return {"success": False, "error": str(e)}
+
+
+def _search_and_download_blocking(query: str, content_type: str, season, imdb_id, verify: bool) -> dict:
+    """Blocking browser work for /api/search-and-download. Runs in a thread,
+    never directly in the FastAPI event loop (SeleniumBase breaks otherwise)."""
+    from seleniumbase import SB
+    from search_and_download import (
+        search_rutracker,
+        select_best_torrent,
+        download_url_and_add_to_transmission,
+        verify_jellyfin,
+    )
+
+    login_username = os.environ.get('LOGIN_RUTRACKER')
+    login_password = os.environ.get('PASSWORD_RUTRACKER')
+    tr_host = os.environ.get('TR_HOST')
+    tr_port = int(os.environ.get('TR_PORT', 9091))
+    tr_user = os.environ.get('TR_USER')
+    tr_password = os.environ.get('TR_PASSWORD')
+
+    with SB(uc=True, chromium_arg="--enable-unsafe-swiftshader") as sb:
+        driver = create_session(sb, login_username, login_password)
+        if not driver:
+            return {"success": False, "error": "Failed to login to Rutracker"}
+
+        # Search
+        results = search_rutracker(sb, driver, query, content_type, season, imdb_id)
+        if not results:
+            return {"success": False, "error": "No results found"}
+
+        # Select best
+        best = select_best_torrent(results, content_type, season)
+        if not best:
+            return {"success": False, "error": "No suitable torrent found"}
+
+        # Download and add to Transmission
+        download_dir = '/movies' if content_type == 'movie' else '/series'
+        success = download_url_and_add_to_transmission(sb, driver, best['url'], download_dir, tr_host, tr_port, tr_user, tr_password)
+
+        if not success:
+            return {"success": False, "error": "Failed to download and add torrent"}
+
+        result = {"success": True, "torrent": best}
+
+        # Verify in Jellyfin if requested
+        if verify and imdb_id:
+            jellyfin_result = verify_jellyfin(imdb_id, content_type, season)
+            result["jellyfin_verified"] = jellyfin_result
+
+        return result
+
+
+@app.post("/api/search-and-download")
+async def search_and_download(request: Request):
+    """Search Rutracker and download best match via Transmission, optionally verify in Jellyfin."""
+    import asyncio
+
+    try:
+        data = await request.json()
+        query = data.get('query')
+        content_type = data.get('type', 'movie')
+        season = data.get('season')
+        imdb_id = data.get('imdb_id')
+        verify = data.get('verify', False)
+
+        if not query:
+            return {"success": False, "error": "Query is required"}
+
+        if not RECOMMENDER_AVAILABLE:
+            return {"success": False, "error": "Recommender module unavailable: " + _rec_import_error}
+
+        return await asyncio.to_thread(_search_and_download_blocking, query, content_type, season, imdb_id, verify)
+
+    except Exception as e:
+        logger.error(f"Search and download failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
 def send_telegram_notification(
     torrent_name: str,
     torrent_url: str,
@@ -223,6 +420,114 @@ def send_telegram_notification(
     # except Exception as e:
     #     logger.error(f"Error sending Telegram notification: {e}")
 
+def create_uc_driver():
+    """Raw undetected-chromedriver (no SeleniumBase): headed on :99, minimal flags."""
+    import undetected_chromedriver as uc
+    opts = uc.ChromeOptions()
+    opts.add_argument('--no-sandbox')
+    opts.add_argument('--disable-dev-shm-usage')
+    opts.add_argument('--window-size=1920,1080')
+    driver = uc.Chrome(options=opts, headless=False, use_subprocess=False)
+    try:
+        driver.set_page_load_timeout(120)
+    except Exception:
+        pass
+    return driver
+
+
+def uc_login(driver: WebDriver, login_username: str, login_password: str, max_retries: int = 3) -> Optional[WebDriver]:
+    """Login via raw UC driver: cookies first, then real form submit with
+    human-like typing. Returns authed driver or None."""
+    try:
+        _geom = driver.execute_script(
+            "return screen.width+'x'+screen.height+'x'+screen.colorDepth+' win:'+window.innerWidth+'x'+window.innerHeight;")
+        logger.info(f"UC geometry: {_geom}")
+    except Exception as e:
+        logger.info(f"UC geometry check failed: {e}")
+    if _try_cookie_login(driver):
+        return driver
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info(f"UC login attempt {attempt}/{max_retries}...")
+            try:
+                driver.get("https://rutracker.org/forum/login.php")
+            except Exception as e:
+                logger.info(f"UC goto issue: {e}")
+            deadline = time.time() + 60
+            found = False
+            _cf_tried = False
+            while time.time() < deadline:
+                try:
+                    curl = driver.current_url
+                    if 'login.php' not in curl:
+                        break
+                    if driver.find_elements(By.NAME, 'login_username'):
+                        found = True
+                        logger.info(f"UC login form found | {driver.title} | {curl}")
+                        break
+                    if not _cf_tried:
+                        _cf_tried = True
+                        _cf_point_click(driver)
+                except Exception:
+                    pass
+                time.sleep(3)
+            if not found:
+                try:
+                    src = driver.page_source.lower()
+                except Exception:
+                    src = ''
+                if _is_authed_page(src, login_username):
+                    logger.info("UC already logged in via session")
+                    return driver
+                logger.warning(f"UC login form not found | {driver.title} | {driver.current_url}")
+                continue
+            u = driver.find_element(By.NAME, 'login_username')
+            p = driver.find_element(By.NAME, 'login_password')
+            b = driver.find_element(By.NAME, 'login')
+            try:
+                u.clear()
+                time.sleep(1)
+                for ch in login_username:
+                    u.send_keys(ch)
+                    time.sleep(random.uniform(0.02, 0.09))
+                time.sleep(1)
+                p.clear()
+                time.sleep(1)
+                for ch in login_password:
+                    p.send_keys(ch)
+                    time.sleep(random.uniform(0.02, 0.09))
+                time.sleep(1)
+            except Exception as e:
+                logger.info(f"UC typing failed ({e}), JS fallback")
+                driver.execute_script("arguments[0].value = arguments[1]", u, login_username)
+                driver.execute_script("arguments[0].value = arguments[1]", p, login_password)
+            try:
+                b.click()
+            except Exception:
+                driver.execute_script("arguments[0].click()", b)
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                try:
+                    if 'login.php' not in driver.current_url:
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
+            try:
+                src = driver.page_source.lower()
+            except Exception:
+                src = ''
+            if _is_authed_page(src, login_username):
+                logger.info(f"UC logged in | {driver.current_url}")
+                return driver
+            logger.warning("UC login submit did not authenticate, retrying")
+        except Exception as e:
+            logger.warning(f"UC login error: {e}")
+        if attempt < max_retries:
+            time.sleep(random.uniform(10, 20))
+    return None
+
+
 def create_session(sb, login_username: str, login_password: str, max_retries: int = 3) -> Optional[WebDriver]:
     """Uses the SB context to log into Rutracker, returns the authenticated driver."""
     driver = sb.driver
@@ -236,60 +541,454 @@ def create_session(sb, login_username: str, login_password: str, max_retries: in
             time.sleep(wait_sec)
     return None
 
-def _try_login(sb, driver: WebDriver, login_username: str, login_password: str) -> Optional[WebDriver]:
-    """Single login attempt using CDP mode for Turnstile bypass."""
+def _is_authed_page(src_lower: str, username: str) -> bool:
+    """Ground-truth auth markers from a proven logged-in page:
+    guests carry IS_GUEST: !!'1', authed pages show the username and a
+    JS logout Hook (post2url('login.php', {logout: 1})). The classic
+    'logout=true' URL does NOT exist on Rutracker — never check for it."""
+    if not src_lower:
+        return False
+    if "is_guest: !!'1'" in src_lower:
+        return False
+    ul = (username or '').lower()
+    return bool(ul and ul in src_lower) or 'logout: 1' in src_lower
+
+def _harden_browser(driver: WebDriver) -> None:
+    """Reduces automation fingerprint: some Cloudflare checks key on
+    window.chrome.runtime presence and navigator.deviceMemory plausibility
+    (spec caps it at 8 — Chrome 154 reports raw RAM/1.5 here). Injects stubs
+    on every new document via CDP (no CDP mode needed)."""
     try:
-        logger.info("Opening Rutracker login page via CDP mode...")
-        sb.activate_cdp_mode()
-        sb.goto("https://rutracker.org/forum/login.php")
-        sb.sleep(8)
-        sb.solve_captcha()
-        sb.sleep(5)
-        sb.connect()
+        driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': (
+            "try {"
+            "  var _cr = window.chrome || {};"
+            "  if (!_cr.runtime || typeof _cr.runtime.sendMessage === 'undefined') {"
+            "    _cr.runtime = {connect: function(){}, sendMessage: function(){}};"
+            "  }"
+            "  Object.defineProperty(window, 'chrome', {value: _cr, configurable: true});"
+            "  try { Object.defineProperty(navigator, 'deviceMemory', {get: function() { return 8; }, configurable: true }); } catch (e) {}"
+            "} catch (e) {}")})
+        logger.info("Browser hardening injected (chrome.runtime + deviceMemory stubs)")
+    except Exception as e:
+        logger.info(f"Browser hardening failed: {e}")
 
-        title = driver.title
-        if '521' in title or '520' in title or '522' in title or '503' in title:
-            logger.warning(f"Server error page: '{title}'")
-            return None
+def _human_move(driver, tox: int, toy: int) -> None:
+    """Moves the mouse along a jittered curve with variable speed (human-like).
+    Instant teleports scream automation to behavioral checks."""
+    import random as _r
+    import time as _t
+    from selenium.webdriver.common.action_chains import ActionChains
+    try:
+        vw = driver.execute_script("return window.innerWidth;") or 1280
+        vh = driver.execute_script("return window.innerHeight;") or 800
+        body = driver.find_element(By.TAG_NAME, 'body')
+    except Exception:
+        return
+    last = getattr(_human_move, 'pos', None)
+    if last is None:
+        last = (vw // 2, vh // 2)
+    fx, fy = last
+    # control point: midpoint + perpendicular jitter for a curve
+    mx, my = (fx + tox) / 2, (fy + toy) / 2
+    dx, dy = tox - fx, toy - fy
+    dist = max(1, (dx * dx + dy * dy) ** 0.5)
+    jx = -dy / dist * _r.uniform(-0.25, 0.25) * dist
+    jy = dx / dist * _r.uniform(-0.25, 0.25) * dist
+    cxp, cyp = mx + jx, my + jy
+    steps = max(6, min(20, int(dist / 40)))
+    prev_bx, prev_by = fx - vw / 2, fy - vh / 2
+    for i in range(1, steps + 1):
+        t = i / steps
+        # quadratic bezier
+        px = (1 - t) ** 2 * fx + 2 * (1 - t) * t * cxp + t * t * tox
+        py = (1 - t) ** 2 * fy + 2 * (1 - t) * t * cyp + t * t * toy
+        bx, by = px - vw / 2, py - vh / 2
+        try:
+            ActionChains(driver).move_to_element_with_offset(body, int(bx), int(by)).perform()
+        except Exception:
+            break
+        _t.sleep(_r.uniform(0.02, 0.09))
+    _human_move.pos = (tox, toy)
 
-        fields = driver.find_elements(By.NAME, 'login_username')
-        if fields:
-            logger.info(f"Login form found after CDP load | title: '{title}'")
-        else:
-            deadline = time.time() + 30
-            while time.time() < deadline:
-                title = driver.title
-                if '521' in title or '520' in title or '522' in title or '503' in title:
-                    logger.warning(f"Server error: '{title}'")
-                    return None
-                fields = driver.find_elements(By.NAME, 'login_username')
-                if fields:
-                    logger.info(f"Login form appeared after extra wait | title: '{title}'")
-                    break
-                time.sleep(2)
-            else:
-                logger.warning(f"Login form not found | title: '{driver.title}' | URL: {driver.current_url}")
+
+def _cf_point_click(driver) -> bool:
+    """Clicks the Turnstile checkbox anchored on rendered text (resolution
+    independent). The checkbox sits left of the 'Verify you are human'
+    label; fallback: below the 'Performing security verification' heading.
+
+    STATUS Sep 2026 — clicks LAND pixel-perfect (verified via screenshots)
+    but the backend SILENTLY rejects them (box stays empty, no spinner, no
+    error). Ruled out: missing the box (anchor+cluster+screenshots), instant
+    teleports (now curved human mouse with pauses), dead widget (it renders).
+    Hypothesis: Cloudflare scores this client (datacenter egress + automation
+    tells) below the verify threshold. Next ideas: (a) exact User-Agent match
+    to a passing browser; (b) pure undetected-chromedriver without SeleniumBase
+    (fewer artifacts); (c) 2captcha/rucaptcha Turnstile task (sitekey is in
+    page HTML) to mint cf_clearance, then plain HTTP + throttling (proven:
+    session-only requests return authed index). DO NOT hammer.
+    """
+    try:
+        from selenium.webdriver.common.action_chains import ActionChains
+
+        def _rect(el):
+            try:
+                r = el.rect
+                return (r['x'], r['y'], r['width'], r['height'])
+            except Exception:
                 return None
 
-        username_field = driver.find_element(By.NAME, 'login_username')
-        password_field = driver.find_element(By.NAME, 'login_password')
-        login_btn = driver.find_element(By.NAME, 'login')
+        target = None
+        try:
+            labels = driver.find_elements(By.XPATH, "//*[contains(text(), 'Verify you are human')]")
+            for lb in labels:
+                r = _rect(lb)
+                if r and r[2] > 20:
+                    target = (r[0] - 30, r[1] + 10, f"label@{int(r[0])},{int(r[1])}")
+                    break
+        except Exception:
+            pass
+        if target is None:
+            try:
+                heads = driver.find_elements(By.XPATH, "//*[contains(text(), 'Performing security verification')]")
+                for h in heads:
+                    r = _rect(h)
+                    if r and r[2] > 50:
+                        target = (r[0] + 19, r[1] + 126, f"head@{int(r[0])},{int(r[1])}")
+                        break
+            except Exception:
+                pass
+        if target is None:
+            logger.info("CF anchor: no widget text rendered yet")
+            return False
+        cx, cy, how = target
+        try:
+            vw = driver.execute_script("return window.innerWidth;") or 1280
+            vh = driver.execute_script("return window.innerHeight;") or 800
+            body = driver.find_element(By.TAG_NAME, 'body')
+            # Cluster around the box to cover anchor uncertainty, with
+            # human-like curved movement (teleports fail behavioral checks).
+            import random as _rr
+            base_x, base_y = cx, cy
+            for dx in (0, -12, 12):
+                try:
+                    _human_move(driver, int(base_x + dx), int(base_y + _rr.uniform(-4, 4)))
+                    from selenium.webdriver.common.action_chains import ActionChains
+                    body = driver.find_element(By.TAG_NAME, 'body')
+                    vw = driver.execute_script("return window.innerWidth;") or 1280
+                    vh = driver.execute_script("return window.innerHeight;") or 800
+                    a = ActionChains(driver)
+                    a.move_to_element_with_offset(
+                        body, int(base_x + dx - vw / 2), int(base_y - vh / 2))
+                    a.pause(_rr.uniform(0.15, 0.45))
+                    a.click_and_hold()
+                    a.pause(_rr.uniform(0.08, 0.22))
+                    a.release()
+                    a.perform()
+                    _human_move.pos = (int(base_x + dx), int(base_y))
+                    logger.info(f"CF widget human-clicked around ({int(base_x + dx)},{int(base_y)})")
+                    time.sleep(5)
+                except Exception as e:
+                    logger.info(f"CF human click failed: {e}")
+                    continue
+            try:
+                driver.save_screenshot('/tmp/last_click.png')
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            logger.info(f"CF anchor click failed: {e}")
+            return False
+    except Exception as e:
+        logger.info(f"CF clicker issue: {e}")
+    return False
+
+
+def _try_cookie_login(driver: WebDriver) -> bool:
+    """Restores Rutracker session from RUTRACKER_BB_SESSION / RUTRACKER_BB_DATA
+    env cookies (copied once from a manually logged-in browser). Bypasses the
+    login form and its captcha entirely.
+
+    STATUS Sep 2026 — WORKS on index.php ('Cookie session restored' in logs:
+    ground-truth markers are username + JS logout hook + no IS_GUEST flag;
+    the classic 'logout=true' URL does NOT exist on Rutracker, never check it).
+    Caveats learned the hard way:
+    - bb_session/bb_t are LONG-LIVED (expiry 2027) and valid (proven: plain
+      HTTP + same egress IP returns authed index). If restore fails, suspect
+      values first (must be full-length, bb_session is 39 chars like
+      0-<userid>-<hash>), not the code.
+    - cf_clearance is SHORT-LIVED (rotates <~1h). A stale one is worse than
+      none: the server re-issues its own copy -> duplicate cookies -> server
+      reads the wrong one. Keep RUTRACKER_CF_CLEARANCE EMPTY unless testing
+      with a fresh-minutes value (singleton required: exact domain+path match
+      when injecting, else duplicates).
+    - Strict paths (viewtopic/tracker/search/dl.php) need CF clearance even
+      with a valid session; index.php does not.
+    """
+    if os.environ.get('FORCE_FORM_LOGIN') == '1':
+        logger.info("FORCE_FORM_LOGIN=1, skipping cookie restore")
+        return False
+    cookies = {}
+    sess = (os.environ.get('RUTRACKER_BB_SESSION') or '').strip().strip('"').strip("'")
+    data = (os.environ.get('RUTRACKER_BB_DATA') or '').strip().strip('"').strip("'")
+    bt = (os.environ.get('RUTRACKER_BB_T') or '').strip().strip('"').strip("'")
+    ssl = (os.environ.get('RUTRACKER_BB_SSL') or '').strip().strip('"').strip("'")
+    if sess:
+        cookies['bb_session'] = sess
+    if data:
+        cookies['bb_data'] = data
+    if bt:
+        cookies['bb_t'] = bt
+    if ssl:
+        cookies['bb_ssl'] = ssl
+    cf = (os.environ.get('RUTRACKER_CF_CLEARANCE') or '').strip().strip('"').strip("'")
+    if cf:
+        cookies['cf_clearance'] = cf
+    if not cookies:
+        return False
+    _harden_browser(driver)
+    try:
+        logger.info("Trying cookie session restore...")
+        # Clear site-issued copies on BOTH path contexts first. HttpOnly
+        # cookies (cf_clearance) can't be touched via JS, and delete_cookie
+        # only affects the current path — so visit each path explicitly.
+        # Otherwise duplicates remain and the server may read the wrong one.
+        for _path_url in ('https://rutracker.org/', 'https://rutracker.org/forum/index.php'):
+            try:
+                driver.execute_script(f"window.location.href = '{_path_url}'")
+            except Exception:
+                pass
+            time.sleep(3)
+            for _n in ('cf_clearance', 'bb_session', 'bb_data', 'bb_t', 'bb_ssl', 'bb_guid'):
+                try:
+                    driver.delete_cookie(_n)
+                except Exception:
+                    pass
+        for name, value in cookies.items():
+            # Paths/domains per live DevTools: cf_clearance on path=/,
+            # forum cookies on /forum/, all on dotted .rutracker.org.
+            # Exact match is required, otherwise duplicates are created and
+            # the server may read the wrong copy.
+            path = '/' if name == 'cf_clearance' else '/forum/'
+            try:
+                driver.add_cookie({'name': name, 'value': value,
+                                   'domain': '.rutracker.org', 'path': path})
+            except Exception as e:
+                logger.warning(f"add_cookie {name} failed: {e}")
+                return False
+        try:
+            driver.execute_script("window.location.href = 'https://rutracker.org/forum/index.php'")
+        except Exception:
+            pass
+        # Poll for auth markers — the page may need a reload cycle (tunnel+CF).
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            time.sleep(3)
+            try:
+                src = driver.page_source.lower()
+                allc = driver.get_cookies()
+                names = [c.get('name', '') for c in allc]
+                url = driver.current_url
+            except Exception:
+                continue
+            logger.info(f"Cookie-check: url={url} title={driver.title} cookies={names} "
+                        f"guest={'is_guest' in src} logout={'logout=true' in src}")
+            try:
+                _cf = [(c.get('domain'), c.get('path'), c.get('secure'), len(c.get('value', '')))
+                       for c in allc if c.get('name') == 'cf_clearance']
+                _bb = [(c.get('domain'), c.get('path'), len(c.get('value', '')))
+                       for c in allc if c.get('name') == 'bb_session']
+                logger.info(f"Cookie-attrs cf={_cf} bb_session={_bb}")
+            except Exception as e:
+                logger.info(f"Cookie-attrs failed: {e}")
+            if _is_authed_page(src, LOGIN_RUTRACKER):
+                logger.info("Cookie session restored (auth markers present)")
+                return True
+        logger.warning("Cookie session restore failed (still guest)")
+        return False
+    except Exception as e:
+        logger.warning(f"Cookie login error: {e}")
+        return False
+
+def _try_login(sb, driver: WebDriver, login_username: str, login_password: str) -> Optional[WebDriver]:
+    """Single login attempt: plain-UC navigation (CDP Page.navigate hangs and
+    kills the driver on stall; CDP attach on challenge pages crashed Chrome
+    154 natively — do NOT re-add either without re-testing), visible-form
+    fill, ActionChains submit, strict auth verification.
+
+    NOTE on site captcha: Rutracker shows an image captcha (cap_sid/cap_code)
+    on the form after several failed attempts. The bot cannot solve it; EVERY
+    failed submit extends the flag. If the form carries cap_* fields, stop
+    trying (stop the container!) and let the counter decay, or log in manually
+    once (resets it) and refresh RUTRACKER_BB_SESSION. Never hammer.
+    """
+    try:
+        # 0) Cookie session restore first — no captcha needed.
+        if _try_cookie_login(driver):
+            driver.set_page_load_timeout(120)
+            return driver
+
+        # Dead session cookies make Rutracker bounce login.php -> index.php
+        # (guest content, no form). Drop them so the real form appears.
+        for _cn in ('bb_session', 'bb_data'):
+            try:
+                driver.delete_cookie(_cn)
+            except Exception:
+                pass
+
+        # Hybrid: navigate in plain UC (CDP Page.navigate hangs and kills the
+        # driver on stall). The login page may show an interactive Cloudflare
+        # checkbox — click it manually inside its iframe (no CDP needed).
+        logger.info("Opening Rutracker login page (plain UC mode)...")
+        try:
+            driver.execute_script("window.location.href = 'https://rutracker.org/forum/login.php'")
+        except Exception as exc:
+            logger.info(f"Nav exec: {type(exc).__name__}")
+        time.sleep(6)
+
+        def _click_cf_checkbox() -> bool:
+            return _cf_point_click(driver)
+
+        # Wait for the form; click the Turnstile checkbox if a challenge shows.
+        deadline = time.time() + 120
+        fields = []
+        title = ''
+        _clicked = False
+        _cdp_tried = False
+        while time.time() < deadline:
+            try:
+                current_url = driver.current_url
+                title = driver.title
+                if '521' in title or '520' in title or '522' in title or '503' in title:
+                    logger.warning(f"Server error page: '{title}'")
+                    return None
+                if 'login.php' not in current_url:
+                    break  # redirected (session?) — handled below
+                fields = driver.find_elements(By.NAME, 'login_username')
+                if fields:
+                    logger.info(f"Login form found | title: '{title}' | URL: {current_url}")
+                    break
+                if not _clicked:
+                    _clicked = _click_cf_checkbox()
+                # If the widget won't click, try one awaited CDP solve.
+                if not _cdp_tried and time.time() > deadline - 75:
+                    _cdp_tried = True
+                    logger.info(f"CDP solve: {_cdp_solve()}")
+            except Exception:
+                pass
+            time.sleep(3)
+        else:
+            logger.warning(f"Login form not found | title: '{title}' | URL: {driver.current_url}")
+            try:
+                driver.save_screenshot('/tmp/last_login.png')
+                logger.info("Saved failure screenshot to /tmp/last_login.png")
+                h = driver.page_source
+                logger.info(f"Failure HTML len={len(h)}")
+                try:
+                    with open('/tmp/last_login.html', 'w') as _f:
+                        _f.write(h)
+                    logger.info("Saved failure HTML to /tmp/last_login.html")
+                except Exception as e:
+                    logger.info(f"HTML save failed: {e}")
+                try:
+                    _blog = driver.get_log('browser')[-8:]
+                    for _e in _blog:
+                        logger.info(f"BrowserConsole: {_e.get('level')} {_e.get('message', '')[:250]}")
+                except Exception as e:
+                    logger.info(f"Console log unavailable: {e}")
+            except Exception as e:
+                logger.info(f"Failure dump failed: {e}")
+            return None
+
+        if fields:
+            pass  # form path continues below
+        elif 'login.php' not in driver.current_url:
+            # Redirected away from login.php without a form = active session
+            # (Rutracker sends logged-in users from login.php to index.php).
+            try:
+                src = driver.page_source.lower()
+            except Exception:
+                src = ''
+            if _is_authed_page(src, login_username):
+                logger.info(f"Already logged in via existing session | URL: {driver.current_url}")
+                driver.set_page_load_timeout(120)
+                return driver
+            logger.info("On index without auth markers yet, continuing to form check...")
+            fields = driver.find_elements(By.NAME, 'login_username')
+            if not fields:
+                logger.warning(f"Login form not found | title: '{driver.title}' | URL: {driver.current_url}")
+                return None
+        else:
+            # Already waited 60s above while on login.php with no form.
+            logger.warning(f"Login form not found | title: '{driver.title}' | URL: {driver.current_url}")
+            return None
+
+        # Fill the VISIBLE login form (the page can contain hidden quick-login
+        # duplicates — filling those silently does nothing).
+        def _visible(names):
+            els = driver.find_elements(By.NAME, names)
+            vis = [e for e in els if e.is_displayed()]
+            return vis[0] if vis else (els[0] if els else None)
+
+        username_field = _visible('login_username')
+        password_field = _visible('login_password')
+        login_btn = _visible('login')
+        if not username_field or not password_field or not login_btn:
+            logger.warning("Login form elements not found (visible)")
+            return None
+        logger.info(f"Login controls: user tag={username_field.tag_name}, "
+                    f"btn tag={login_btn.tag_name} type={login_btn.get_attribute('type')}")
 
         page_src = driver.page_source
         if 'rutracker.org' not in page_src.lower() or 'login_username' not in page_src:
             logger.warning("Form found but page doesn't look like Rutracker login")
             return None
 
-        driver.execute_script("arguments[0].value = arguments[1]", username_field, login_username)
-        driver.execute_script("arguments[0].value = arguments[1]", password_field, login_password)
-        driver.execute_script("arguments[0].click()", login_btn)
-
-        time.sleep(2)
+        # Fill via SeleniumBase (real input events) with JS fallback.
         try:
-            driver.execute_script("window.location.href = 'https://rutracker.org/forum/index.php'")
-        except Exception as exc:
-            logger.info(f"CAUGHT nav: {type(exc).__name__}: {str(exc)[:80]}")
+            sb.clear('input[name="login_username"]')
+            sb.type('input[name="login_username"]', login_username)
+            sb.clear('input[name="login_password"]')
+            sb.type('input[name="login_password"]', login_password)
+        except Exception as e:
+            logger.info(f"sb.type failed ({e}), using JS fill")
+            driver.execute_script("arguments[0].value = arguments[1]", username_field, login_username)
+            driver.execute_script("arguments[0].value = arguments[1]", password_field, login_password)
+        # Read back — if values didn't stick, the elements are detached.
+        try:
+            got_u = username_field.get_attribute('value') or ''
+            got_p = password_field.get_attribute('value') or ''
+            logger.info(f"Fill check: user len={len(got_u)} pass len={len(got_p)}")
+            if len(got_u) != len(login_username) or len(got_p) != len(login_password):
+                logger.warning("Filled values did not stick — elements likely detached")
+                return None
+        except Exception as e:
+            logger.info(f"Fill readback failed: {e}")
 
+        # Submit: real mouse click via ActionChains, with JS click +
+        # form.submit() fallbacks.
+        submitted = False
+        try:
+            from selenium.webdriver.common.action_chains import ActionChains
+            ActionChains(driver).move_to_element(login_btn).click().perform()
+            submitted = True
+        except Exception as e:
+            logger.info(f"ActionChains click failed ({e}), trying JS click + form submit")
+            try:
+                driver.execute_script("arguments[0].click()", login_btn)
+                submitted = True
+            except Exception:
+                pass
+        if not submitted:
+            try:
+                driver.execute_script("arguments[0].form.submit()", login_btn)
+                submitted = True
+            except Exception as e:
+                logger.warning(f"All submit attempts failed: {e}")
+                return None
+
+        # IMPORTANT: do NOT force-navigate here — the login POST needs time to
+        # complete, and navigating away aborts it (leaving a guest session).
+        logger.info("Login submitted, waiting for redirect...")
         deadline = time.time() + 30
         current_url = ''
         while time.time() < deadline:
@@ -307,6 +1006,32 @@ def _try_login(sb, driver: WebDriver, login_username: str, login_password: str) 
                 driver.execute_script("window.stop()")
             except Exception:
                 pass
+            try:
+                err_src = driver.page_source
+                err_low = err_src.lower()
+                for kw in ('неверн', 'ошибк', 'incorrect', 'error', 'забанен', 'banned', 'challenge', 'turnstile'):
+                    if kw in err_low:
+                        logger.warning(f"Login page contains marker: '{kw}'")
+                        break
+                logger.warning(f"Login form captcha present: {('cap_sid' in err_src or 'cap_code' in err_src)}")
+                m = re.search(r'(неверн.{0,80}|ошибк.{0,80}|incorrect.{0,80})', err_src, re.IGNORECASE | re.DOTALL)
+                if m:
+                    logger.warning(f"Login error text: {m.group(1)[:120]}")
+            except Exception:
+                pass
+            return None
+
+        # Verify the session is really authenticated (guests can also open
+        # index.php — URL alone proves nothing). Ground truth: no IS_GUEST
+        # marker plus username or the JS logout hook. NOTE: mere presence of
+        # a bb_session cookie proves NOTHING (it may be dead).
+        try:
+            verify_src = driver.page_source.lower()
+        except Exception:
+            verify_src = ''
+        authed = _is_authed_page(verify_src, login_username)
+        if not authed:
+            logger.warning("Reached index but no auth markers (username/logout hook, no IS_GUEST) — treating as guest, retrying")
             return None
 
         logger.info(f"Logged into Rutracker | URL: {current_url}")
@@ -332,6 +1057,7 @@ def _try_login(sb, driver: WebDriver, login_username: str, login_password: str) 
         logger.warning(f"Login attempt error: {e}")
         return None
 
+
 def is_series_complete(text: str) -> bool:
     """Returns True if the text indicates a completed TV series season.
     Checks patterns like 'Серии: 1-8 из 8' or 'Episodes: 1-10 of 10'.
@@ -347,6 +1073,62 @@ def is_series_complete(text: str) -> bool:
     if m and m.group(1) == m.group(2):
         return True
     return False
+
+def _wait_for_clean_page(driver: WebDriver, timeout: int = 30) -> tuple[str, str]:
+    """Returns (page_source, title), waiting out a Cloudflare 'Just a moment'
+    managed challenge (it often auto-clears in seconds). Moves the mouse and
+    scrolls a little while waiting — human-presence signal for behavioral
+    checks."""
+    import time as _t
+    import random as _r
+    deadline = _t.time() + timeout
+    src, title = '', ''
+    _con_logged = False
+    _moved = 0
+    _clicks_done = 0
+    while True:
+        try:
+            src = driver.page_source
+        except Exception:
+            src = ''
+        try:
+            title = driver.title
+        except Exception:
+            title = ''
+        low = (title + ' ' + src[:2000]).lower()
+        if 'just a moment' not in low and 'challenge-platform' not in low:
+            return src, title
+        if _t.time() >= deadline:
+            if not _con_logged:
+                _con_logged = True
+                try:
+                    for _e in driver.get_log('browser')[-8:]:
+                        logger.info(f"CFConsole: {_e.get('level')} {_e.get('message', '')[:250]}")
+                except Exception as e:
+                    logger.info(f"CF console unavailable: {e}")
+            return src, title
+        # Click attempts while challenged (human-presence signal), max 2 per page.
+        if _clicks_done < 2:
+            _clicks_done += 1
+            try:
+                _cf_point_click(driver)
+            except Exception:
+                pass
+        # human-like presence: small mouse moves + scroll
+        try:
+            from selenium.webdriver.common.action_chains import ActionChains
+            vw = driver.execute_script("return window.innerWidth || 1280;") or 1280
+            vh = driver.execute_script("return window.innerHeight || 800;") or 800
+            body = driver.find_element(By.TAG_NAME, 'body')
+            ox = _r.randint(-int(vw / 3), int(vw / 3))
+            oy = _r.randint(-int(vh / 3), int(vh / 3))
+            ActionChains(driver).move_to_element_with_offset(body, ox, oy).perform()
+            if _moved % 2 == 1:
+                driver.execute_script(f"window.scrollBy(0, {_r.randint(80, 240)});")
+            _moved += 1
+        except Exception:
+            pass
+        _t.sleep(3)
 
 def is_torrent_updated(url: str, torrent_date: datetime.datetime, session: WebDriver, max_retries: int = 3) -> tuple[bool, str, str, str, bool]:
     """Checks if the torrent on the tracker is newer than the local one. Retries on failure.
@@ -377,10 +1159,12 @@ def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDr
             driver.execute_script("window.location.href = arguments[0]", url)
         except Exception as exc:
             logger.info(f"Nav exec error: {type(exc).__name__}")
-        time.sleep(1)
+        time.sleep(3)
 
         try:
-            page_source = driver.page_source
+            page_source, _ = _wait_for_clean_page(driver, timeout=30)
+            if not page_source:
+                raise RuntimeError("empty page")
         except Exception as exc:
             logger.info(f"page_source error: {type(exc).__name__}")
             try:
@@ -611,6 +1395,13 @@ def main():
 
     logger.info(f"Scheduled check every {CHECK_INTERVAL} {CHECK_INTERVAL_UNIT}")
 
+    # Schedule daily recommendations at 03:00 MSK (only if recommender imports)
+    if RECOMMENDER_AVAILABLE:
+        schedule.every().day.at("03:00").do(run_daily_recommendations)
+        logger.info("Scheduled daily recommendations at 03:00 MSK")
+    else:
+        logger.warning("Daily recommendations NOT scheduled (recommender unavailable)")
+
     # Start Web Server in a separate thread
     def run_web_server():
         logger.info("Starting web server on port 6050...")
@@ -629,139 +1420,137 @@ def main():
         schedule.run_pending()
         time.sleep(1)
 
-if __name__ == "__main__":
-    # Rename original main to check_and_update_torrents for better clarity in scheduling
-    def check_and_update_torrents():
-        if not status_manager.try_start_check():
-            logger.warning("Check already in progress, skipping...")
-            return
+def check_and_update_torrents():
+    if not status_manager.try_start_check():
+        logger.warning("Check already in progress, skipping...")
+        return
 
-        logger.info("--- Starting Check Cycle ---")
-        status_manager.record_check()
+    logger.info("--- Starting Check Cycle ---")
+    status_manager.record_check()
 
-        if not all([LOGIN_RUTRACKER, PASSWORD_RUTRACKER, TR_HOST, TR_PORT, TR_USER, TR_PASSWORD]):
-            logger.error("Missing configuration. Please check .env file.")
+    if not all([LOGIN_RUTRACKER, PASSWORD_RUTRACKER, TR_HOST, TR_PORT, TR_USER, TR_PASSWORD]):
+        logger.error("Missing configuration. Please check .env file.")
+        status_manager.update_status("idle")
+        return
+
+    try:
+        tr = Client(host=TR_HOST, port=TR_PORT, username=TR_USER, password=TR_PASSWORD)
+        logger.info(f"Connected to Transmission at {TR_HOST}:{TR_PORT}")
+    except Exception as e:
+        logger.error(f"Failed to connect to Transmission: {e}")
+        status_manager.update_status("idle")
+        return
+
+    try:
+        driver = create_uc_driver()
+    except Exception as e:
+        logger.error(f"Failed to start UC browser: {e}")
+        status_manager.update_status("idle")
+        return
+
+    try:
+        session = uc_login(driver, LOGIN_RUTRACKER, PASSWORD_RUTRACKER)
+        if not session:
+            logger.warning("Login failed completely. Will retry in 15 minutes.")
             status_manager.update_status("idle")
+            def _retry_soon():
+                time.sleep(15 * 60)
+                check_and_update_torrents()
+            threading.Thread(target=_retry_soon, daemon=True).start()
             return
 
         try:
-            tr = Client(host=TR_HOST, port=TR_PORT, username=TR_USER, password=TR_PASSWORD)
-            logger.info(f"Connected to Transmission at {TR_HOST}:{TR_PORT}")
-        except Exception as e:
-            logger.error(f"Failed to connect to Transmission: {e}")
-            status_manager.update_status("idle")
-            return
+            torrents = tr.get_torrents()
+            rutracker_torrents = [
+                t for t in torrents
+                if t.percent_complete == 1
+                and t.comment
+                and 'rutracker.org' in t.comment
+            ]
+            logger.info(f"Checking {len(rutracker_torrents)} torrents...")
+            time.sleep(20)  # let CF settle after the login burst; human pace
 
-        with SB(uc=True, xvfb=True) as sb:
-            session = create_session(sb, LOGIN_RUTRACKER, PASSWORD_RUTRACKER)
-            if not session:
-                logger.warning("Login failed completely. Will retry in 15 minutes.")
-                status_manager.update_status("idle")
-                def _retry_soon():
-                    time.sleep(15 * 60)
-                    check_and_update_torrents()
-                threading.Thread(target=_retry_soon, daemon=True).start()
-                return
+            # Note: season completion is now detected from the rutracker page title
+            # during process_torrent(), so no pre-filtering by local name needed here.
 
-            try:
-                torrents = tr.get_torrents()
-                rutracker_torrents = [
-                    t for t in torrents
-                    if t.percent_complete == 1
-                    and t.comment
-                    and 'rutracker.org' in t.comment
-                ]
-                logger.info(f"Checking {len(rutracker_torrents)} torrents...")
+            def process_torrent(torrent):
+                torrent_url = torrent.comment
+                torrent_date_ts = getattr(torrent, 'date_created', getattr(torrent, 'dateCreated', 0))
+                if not torrent_date_ts:
+                    torrent_date_ts = getattr(torrent, 'added_date', 0)
+                if isinstance(torrent_date_ts, datetime.datetime):
+                    torrent_date = torrent_date_ts
+                else:
+                    torrent_date = datetime.datetime.fromtimestamp(int(torrent_date_ts))
 
-                # Note: season completion is now detected from the rutracker page title
-                # during process_torrent(), so no pre-filtering by local name needed here.
+                is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete = is_torrent_updated(torrent_url, torrent_date, session)
 
-                def process_torrent(torrent):
-                    torrent_url = torrent.comment
-                    torrent_date_ts = getattr(torrent, 'date_created', getattr(torrent, 'dateCreated', 0))
-                    if not torrent_date_ts:
-                        torrent_date_ts = getattr(torrent, 'added_date', 0)
-                    if isinstance(torrent_date_ts, datetime.datetime):
-                        torrent_date = torrent_date_ts
+                if not local_date_str and not tracker_date_str:
+                    status_manager.record_torrent_check(torrent.name, '?', '?', 'error', error_msg=error_msg, torrent_url=torrent_url)
+                    return None
+
+                if is_updated:
+                    if is_season_complete:
+                        # Final episode just dropped — download it first, THEN remove on next cycle
+                        logger.info(f"Season complete + update available: will download final episode first: {torrent.name}")
+                        return ('update', torrent, torrent_url, local_date_str, tracker_date_str)
                     else:
-                        torrent_date = datetime.datetime.fromtimestamp(int(torrent_date_ts))
+                        return ('update', torrent, torrent_url, local_date_str, tracker_date_str)
+                else:
+                    if is_season_complete:
+                        # Already have all episodes locally — safe to stop tracking
+                        return ('season_complete', torrent, torrent_url, local_date_str, tracker_date_str)
+                    logger.info(f"Up-to-date: {torrent.name} (local: {local_date_str}, tracker: {tracker_date_str})")
+                    status_manager.record_torrent_check(torrent.name, local_date_str, tracker_date_str, 'ok', torrent_url=torrent_url)
+                    return None
 
-                    is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete = is_torrent_updated(torrent_url, torrent_date, session)
+            results = []
+            for i, torrent in enumerate(rutracker_torrents):
+                if i:
+                    time.sleep(30)  # human pace: bursts trigger CF challenges
+                results.append(process_torrent(torrent))
 
-                    if not local_date_str and not tracker_date_str:
-                        status_manager.record_torrent_check(torrent.name, '?', '?', 'error', error_msg=error_msg, torrent_url=torrent_url)
-                        return None
-
-                    if is_updated:
-                        if is_season_complete:
-                            # Final episode just dropped — download it first, THEN remove on next cycle
-                            logger.info(f"Season complete + update available: will download final episode first: {torrent.name}")
-                            return ('update', torrent, torrent_url, local_date_str, tracker_date_str)
-                        else:
-                            return ('update', torrent, torrent_url, local_date_str, tracker_date_str)
-                    else:
-                        if is_season_complete:
-                            # Already have all episodes locally — safe to stop tracking
-                            return ('season_complete', torrent, torrent_url, local_date_str, tracker_date_str)
-                        logger.info(f"Up-to-date: {torrent.name} (local: {local_date_str}, tracker: {tracker_date_str})")
-                        status_manager.record_torrent_check(torrent.name, local_date_str, tracker_date_str, 'ok', torrent_url=torrent_url)
-                        return None
-
-                results = []
-                for torrent in rutracker_torrents:
-                    results.append(process_torrent(torrent))
-
-                # Handle completed seasons — remove from Transmission without re-downloading
-                for r in results:
-                    if r is not None and r[0] == 'season_complete':
-                        _, torrent, torrent_url, local_date_str, tracker_date_str = r
-                        try:
-                            tr.remove_torrent(torrent.id)
-                            status_manager.record_torrent_check(torrent.name, local_date_str, tracker_date_str, 'season_complete',
-                                error_msg='Сезон завершён, удалён из Transmission', torrent_url=torrent_url)
-                            send_telegram_notification(
-                                torrent_name=torrent.name,
-                                torrent_url=torrent_url,
-                                local_date=local_date_str,
-                                tracker_date=tracker_date_str,
-                                success=True,
-                                custom_message='\U0001f3c1 Сезон завершён, сериал скачан полностью'
-                            )
-                        except Exception as e:
-                            logger.error(f"Failed to remove completed season {torrent.name}: {e}")
-
-                # Filter results that need updating
-                updates_to_perform = [r[1:] for r in results if r is not None and r[0] == 'update']
-                
-                for torrent, torrent_url, local_date_str, tracker_date_str in updates_to_perform:
-                    logger.info(f"Update available for {torrent.name}. Updating...")
-                    status_manager.update_status("updating")
-
+            # Handle completed seasons — remove from Transmission without re-downloading
+            for r in results:
+                if r is not None and r[0] == 'season_complete':
+                    _, torrent, torrent_url, local_date_str, tracker_date_str = r
                     try:
-                        # Download new torrent FIRST — only remove old one if download succeeds
-                        if download_and_add_torrent(torrent_url, session, torrent.download_dir, tr):
-                            tr.remove_torrent(torrent.id)
-                            logger.info("Update successful.")
-                            status_manager.record_update(torrent.name, local_date_str, tracker_date_str, True, torrent_url=torrent_url)
-                            send_telegram_notification(
-                                torrent_name=torrent.name,
-                                torrent_url=torrent_url,
-                                local_date=local_date_str,
-                                tracker_date=tracker_date_str,
-                                success=True
-                            )
-                        else:
-                            logger.error("Failed to download new torrent — old torrent kept intact.")
-                            status_manager.record_update(torrent.name, local_date_str, tracker_date_str, False, torrent_url=torrent_url)
-                            send_telegram_notification(
-                                torrent_name=torrent.name,
-                                torrent_url=torrent_url,
-                                local_date=local_date_str,
-                                tracker_date=tracker_date_str,
-                                success=False
-                            )
+                        tr.remove_torrent(torrent.id)
+                        status_manager.record_torrent_check(torrent.name, local_date_str, tracker_date_str, 'season_complete',
+                            error_msg='Сезон завершён, удалён из Transmission', torrent_url=torrent_url)
+                        send_telegram_notification(
+                            torrent_name=torrent.name,
+                            torrent_url=torrent_url,
+                            local_date=local_date_str,
+                            tracker_date=tracker_date_str,
+                            success=True,
+                            custom_message='\U0001f3c1 Сезон завершён, сериал скачан полностью'
+                        )
                     except Exception as e:
-                        logger.error(f"Error during update process: {e}")
+                        logger.error(f"Failed to remove completed season {torrent.name}: {e}")
+
+            # Filter results that need updating
+            updates_to_perform = [r[1:] for r in results if r is not None and r[0] == 'update']
+            
+            for torrent, torrent_url, local_date_str, tracker_date_str in updates_to_perform:
+                logger.info(f"Update available for {torrent.name}. Updating...")
+                status_manager.update_status("updating")
+
+                try:
+                    # Download new torrent FIRST — only remove old one if download succeeds
+                    if download_and_add_torrent(torrent_url, session, torrent.download_dir, tr):
+                        tr.remove_torrent(torrent.id)
+                        logger.info("Update successful.")
+                        status_manager.record_update(torrent.name, local_date_str, tracker_date_str, True, torrent_url=torrent_url)
+                        send_telegram_notification(
+                            torrent_name=torrent.name,
+                            torrent_url=torrent_url,
+                            local_date=local_date_str,
+                            tracker_date=tracker_date_str,
+                            success=True
+                        )
+                    else:
+                        logger.error("Failed to download new torrent — old torrent kept intact.")
                         status_manager.record_update(torrent.name, local_date_str, tracker_date_str, False, torrent_url=torrent_url)
                         send_telegram_notification(
                             torrent_name=torrent.name,
@@ -770,13 +1559,29 @@ if __name__ == "__main__":
                             tracker_date=tracker_date_str,
                             success=False
                         )
+                except Exception as e:
+                    logger.error(f"Error during update process: {e}")
+                    status_manager.record_update(torrent.name, local_date_str, tracker_date_str, False, torrent_url=torrent_url)
+                    send_telegram_notification(
+                        torrent_name=torrent.name,
+                        torrent_url=torrent_url,
+                        local_date=local_date_str,
+                        tracker_date=tracker_date_str,
+                        success=False
+                    )
 
-                    status_manager.update_status("checking")
+                status_manager.update_status("checking")
 
-            except Exception as e:
-                logger.error(f"Error in check loop: {e}")
-            finally:
-                status_manager.update_status("idle")
-                logger.info("--- Check Cycle Finished ---")
+        except Exception as e:
+            logger.error(f"Error in check loop: {e}")
+        finally:
+            status_manager.update_status("idle")
+            logger.info("--- Check Cycle Finished ---")
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
+if __name__ == "__main__":
     main()

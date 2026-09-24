@@ -1,5 +1,6 @@
 seleniumbase
 selenium
+undetected-chromedriver
 transmission-rpc
 dateparser
 beautifulsoup4
