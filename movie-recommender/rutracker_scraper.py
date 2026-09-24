@@ -26,11 +26,13 @@ def _is_authed_page(src_lower: str, username: str) -> bool:
     ul = (username or '').lower()
     return bool(ul and ul in src_lower) or 'logout: 1' in src_lower
 
-# Dubbing detection keywords
+# Dubbing detection keywords (series voiceovers included: MVO/LVO/VO/ПМ/ПД
+# are the standard Rutracker translation tags for series packs).
 DUB_KEYWORDS = [
-    'DUB', 'Дублированный', 'Dubbing', 'Multi', 'Мульти', 
+    'DUB', 'Дублированный', 'Dubbing', 'Multi', 'Мульти',
     '2xDVD', 'BDRip-DUB', 'WEB-DL-DUB', 'WEB-DUB', 'Dual',
     'Дубляж', 'Дублирован', 'Мультиголос', 'Профессиональный',
+    'MVO', 'LVO', 'VO', 'ПМ', 'ПД', 'Original', 'Оригинал',
     'Amedia', 'LostFilm', 'Novice', 'HDRezka', 'West Video',
     'Кубик в кубе', 'Дубль', 'TVShow', 'NewStudio', 'Jaskier',
     'AlexFilm', 'BaibaKo', 'MobilStudia', 'Vozrozhdenie',
@@ -61,6 +63,12 @@ QUALITY_KEYWORDS = [
 ]
 
 
+def _kw_start_re(kw: str):
+    """Keyword must start at a word boundary (avoids 'TC' matching 'Match',
+    'MOD' matching 'Modern', 'Scr' matching 'Description')."""
+    return re.compile(r'(?<![a-zа-яё0-9])' + re.escape(kw.lower()))
+
+
 @dataclass
 class RutrackerTorrent:
     """Rutracker torrent entry."""
@@ -85,6 +93,16 @@ class RutrackerScraper:
         self.login = login
         self.password = password
         self.sb = None
+
+    @classmethod
+    def attach(cls, sb, login: str = '', password: str = ''):
+        """Attach an already-logged-in SB session (no extra browser/login).
+        Use this from API flows to avoid a second concurrent session — bursts
+        of parallel sessions trigger Cloudflare strictness."""
+        inst = cls(login, password)
+        inst.sb = sb
+        inst._sb_cm = None
+        return inst
 
     def __enter__(self):
         self._sb_cm = SB(uc=True, chromium_arg="--enable-unsafe-swiftshader")
@@ -421,21 +439,39 @@ class RutrackerScraper:
             url = f"https://rutracker.org/forum/tracker.php?nm={quote_plus(query)}"
             if page:
                 url += f"&start={page * 50}"
+                time.sleep(10)  # human pace between pages; bursts trigger CF
             logger.info(f"  Tracker search p{page + 1}: {query!r}")
-            try:
-                driver.execute_script("window.location.href = arguments[0]", url)
-                time.sleep(5)
-            except Exception as e:
-                logger.warning(f"Tracker nav issue: {e}")
-            try:
-                current = driver.current_url
-                src = driver.page_source
-            except Exception as e:
-                logger.warning(f"Tracker page read failed: {e}")
-                break
-            if 'login.php' in current or "IS_GUEST: !!'1'" in src:
-                raise RuntimeError("Tracker search bounced to login (no auth session)")
-            page_torrents = self._parse_tracker_page(src)
+            page_torrents = []
+            # Up to 3 attempts per page: challenge may clear after CDP solve.
+            for attempt in range(1, 4):
+                try:
+                    driver.execute_script("window.location.href = arguments[0]", url)
+                    time.sleep(6)
+                except Exception as e:
+                    logger.warning(f"Tracker nav issue: {e}")
+                # Wait out a possible CF challenge (managed sometimes auto-clears).
+                src, current = '', ''
+                deadline = time.time() + 30
+                while time.time() < deadline:
+                    try:
+                        current = driver.current_url
+                        src = driver.page_source
+                    except Exception:
+                        time.sleep(3)
+                        continue
+                    if 'login.php' in current or "IS_GUEST: !!'1'" in src:
+                        raise RuntimeError("Tracker search bounced to login (no auth session)")
+                    low = src.lower()
+                    if 'just a moment' not in low and 'challenge-platform' not in low:
+                        break
+                    time.sleep(3)
+                page_torrents = self._parse_tracker_page(src)
+                if page_torrents:
+                    break
+                logger.info(f"  Tracker p{page + 1} attempt {attempt}: empty, {'CDP-solving' if attempt < 3 else 'giving up'}")
+                if attempt < 3:
+                    self._cdp_solve_page(url)
+                    time.sleep(5)
             if not page_torrents:
                 logger.info("  No (more) tracker results, stopping")
                 break
@@ -446,32 +482,58 @@ class RutrackerScraper:
             logger.info(f"  Tracker page {page + 1}: {len(page_torrents)} results")
         return results
 
+    def _cdp_solve_page(self, url: str) -> str:
+        """Full CDP reload+solve for a challenged page (duplicated from main.py
+        to avoid a circular import; keep the two in sync). Attach goes blank
+        (normal), then CDP-navigate + AWAITED Turnstile solve + reconnect."""
+        import asyncio
+        sb = self.sb
+        driver = sb.driver
+        try:
+            sb.activate_cdp_mode()
+        except Exception as e:
+            return f"attach-fail {type(e).__name__}"
+        try:
+            sb.goto(url)
+        except Exception as e:
+            return f"cdp-goto-fail {type(e).__name__}"
+        time.sleep(8)
+        try:
+            res = sb.solve_captcha()
+            if asyncio.iscoroutine(res):
+                res = asyncio.run(res)
+        except Exception as e:
+            return f"solve-fail {type(e).__name__}"
+        time.sleep(5)
+        try:
+            sb.connect()
+        except Exception:
+            pass
+        try:
+            ok = 'just a moment' not in driver.page_source.lower()
+            return f"solved={res} clean={ok}"
+        except Exception:
+            return f"solved={res} clean=?"
+
     def _parse_tracker_page(self, page_source: str) -> List[RutrackerTorrent]:
-        """Parse tracker.php search results table.
-        Columns (live layout): [dl] [status] ФОРУМ | ТЕМА | АВТОР |
-        РАЗМЕР | S | L | C | ДОБАВЛЕН.
+        """Parse tracker.php search results. Single pass over EVERY table row
+        with a topic link (header detection proved brittle — Rutracker uses
+        td-based headers). Layout per live screenshot:
+        [dl] [status] ФОРУМ | ТЕМА | АВТОР | РАЗМЕР | S | L | C | ДОБАВЛЕН.
+        S/L = plain integer cells right after the size cell.
         """
         from bs4 import BeautifulSoup
 
         soup = BeautifulSoup(page_source, 'lxml')
         torrents: List[RutrackerTorrent] = []
         seen = set()
+        n_rows = 0
 
-        # 1) Locate the results table by its header.
-        table = None
-        for tbl in soup.find_all('table'):
-            head_txt = ' '.join(th.get_text(' ', strip=True) for th in tbl.find_all('th'))
-            if 'РАЗМЕР' in head_txt and 'ТЕМА' in head_txt:
-                table = tbl
-                break
-        rows = table.find_all('tr')[1:] if table else []
-
-        for row in rows:
+        for row in soup.find_all('tr'):
             try:
                 links = row.find_all('a', href=re.compile(r'viewtopic\.php\?t=\d+'))
                 if not links:
                     continue
-                # The topic link is the one with substantial text.
                 title_link = max(links, key=lambda a: len(a.get_text(strip=True)))
                 title = title_link.get_text(strip=True)
                 if len(title) < 5:
@@ -482,6 +544,7 @@ class RutrackerScraper:
                 topic_id = int(m.group(1))
                 if topic_id in seen:
                     continue
+                n_rows += 1
 
                 cells = row.find_all(['td', 'th'])
                 cell_texts = [c.get_text(' ', strip=True) for c in cells]
@@ -497,20 +560,48 @@ class RutrackerScraper:
                     if sm:
                         size_str = sm.group(1)
                         size_bytes = self._parse_size(size_str)
+                    # S/L: first two bare-integer cells after size (also
+                    # handles combined "S L" cells via split fallback).
                     nums = []
+                    # Whole-cell integers only (S, then L): thousand separators
+                    # inside ONE cell ("1 234") must not merge with neighbours;
+                    # a combined "10 0" cell still splits sanely.
                     for t in cell_texts[size_idx + 1:]:
-                        tm = re.match(r'^([\d\s,]+)$', t.strip())
-                        if tm:
+                        tn = re.sub(r'\s+', ' ', t).strip()
+                        if not re.fullmatch(r'[\d\s,]+', tn):
+                            if nums:
+                                break
+                            continue
+                        for g in re.findall(r'\d[\d,]*', tn):
                             try:
-                                nums.append(int(tm.group(1).replace(' ', '').replace(',', '')))
+                                nums.append(int(g.replace(',', '')))
                             except Exception:
                                 pass
-                        elif nums:
+                            if len(nums) >= 2:
+                                break
+                        if len(nums) >= 2:
                             break
-                    if len(nums) >= 1:
+                    if nums:
                         seeders = nums[0]
-                    if len(nums) >= 2:
+                    if len(nums) > 1:
                         leechers = nums[1]
+                else:
+                    # No size cell: try forum-style "seeders|leechers" text.
+                    row_text = row.get_text(' ', strip=True)
+                    pm = re.search(r'(\d[\d\s,]*)\s*\|\s*(\d[\d\s,]*)', row_text)
+                    if pm:
+                        try:
+                            seeders = int(re.sub(r'[^\d]', '', pm.group(1)))
+                        except Exception:
+                            pass
+                        try:
+                            leechers = int(re.sub(r'[^\d]', '', pm.group(2)))
+                        except Exception:
+                            pass
+                    sm = re.search(r'(\d[\d\s.,]*\s*(?:TB|GB|MB|KB))\b', row_text, re.IGNORECASE)
+                    if sm:
+                        size_str = sm.group(1)
+                        size_bytes = self._parse_size(size_str)
 
                 forum_id = 0
                 fm = row.find('a', href=re.compile(r'viewforum\.php\?f=\d+'))
@@ -532,53 +623,7 @@ class RutrackerScraper:
                 ))
             except Exception:
                 continue
-        if torrents:
-            return torrents
-
-        # 2) Last-resort generic scan (old behavior).
-        seen = set()
-        for a in soup.find_all('a', href=re.compile(r'viewtopic\.php\?t=\d+')):
-            try:
-                m = re.search(r't=(\d+)', a.get('href', ''))
-                if not m:
-                    continue
-                topic_id = int(m.group(1))
-                if topic_id in seen:
-                    continue
-                title = a.get_text(strip=True)
-                if len(title) < 5:
-                    continue
-                row = a.find_parent('tr')
-                row_text = row.get_text(' ', strip=True) if row else title
-                size_bytes, size_str = 0, ''
-                sm = re.search(r'(\d[\d\s]*[.,]?\d*)\s*([KMGT]B)', row_text)
-                if sm:
-                    size_str = sm.group(0)
-                    size_bytes = self._parse_size(size_str)
-                seeders, leechers = 0, 0
-                pm = re.search(r'(\d[\d\s,]*)\s*\|\s*(\d[\d\s,]*)', row_text)
-                if pm:
-                    try:
-                        seeders = int(pm.group(1).replace(' ', '').replace(',', ''))
-                    except Exception:
-                        pass
-                    try:
-                        leechers = int(pm.group(2).replace(' ', '').replace(',', ''))
-                    except Exception:
-                        pass
-                has_dubbing, dub_studio = self._check_dubbing(title)
-                quality = self._check_quality(title)
-                is_excluded = self._check_excluded(title)
-                seen.add(topic_id)
-                torrents.append(RutrackerTorrent(
-                    topic_id=topic_id, title=title, seeders=seeders, leechers=leechers,
-                    size_bytes=size_bytes, size_str=size_str,
-                    url=f"https://rutracker.org/forum/viewtopic.php?t={topic_id}",
-                    forum_id=0, has_dubbing=has_dubbing, dub_studio=dub_studio,
-                    quality=quality, is_excluded=is_excluded,
-                ))
-            except Exception:
-                continue
+        logger.info(f"  Tracker parse: {n_rows} topic rows -> {len(torrents)} torrents")
         return torrents
 
     def get_session_cookies(self) -> Dict[str, str]:
@@ -605,7 +650,7 @@ class RutrackerScraper:
             try:
                 # Navigate via JS like main.py does
                 driver.execute_script("window.location.href = arguments[0]", url)
-                time.sleep(3)
+                time.sleep(8)  # human pace; bursts trigger CF challenges
                 
                 # Try to solve captcha if present
                 try:
@@ -682,11 +727,11 @@ class RutrackerScraper:
         if '|' in tor_text:
             parts = tor_text.split('|')
             try:
-                seeders = int(parts[0].replace(',', '').replace(' ', ''))
+                seeders = int(re.sub(r'[^\d]', '', parts[0] or '0') or 0)
             except:
                 pass
             try:
-                leechers = int(parts[1].replace(',', '').replace(' ', ''))
+                leechers = int(re.sub(r'[^\d]', '', parts[1] or '0') or 0)
             except:
                 pass
         
@@ -721,22 +766,22 @@ class RutrackerScraper:
     def _check_dubbing(self, title: str) -> tuple:
         """Check if title indicates dubbing (not single voice)."""
         title_lower = title.lower()
-        
+
         # Check for exclusion keywords first
         for ex in EXCLUDE_KEYWORDS:
-            if ex.lower() in title_lower:
+            if _kw_start_re(ex).search(title_lower):
                 return False, None
-        
+
         # Check for preferred studios
         for studio in PREFERRED_DUB_STUDIOS:
-            if studio.lower() in title_lower:
+            if _kw_start_re(studio).search(title_lower):
                 return True, studio
-        
+
         # Check for general dubbing keywords
         for kw in DUB_KEYWORDS:
-            if kw.lower() in title_lower:
+            if _kw_start_re(kw).search(title_lower):
                 return True, "Unknown"
-        
+
         return False, None
 
     def _check_quality(self, title: str) -> Optional[str]:
@@ -789,13 +834,13 @@ class RutrackerScraper:
         """Check if title has exclusion keywords."""
         title_lower = title.lower()
         for ex in EXCLUDE_KEYWORDS:
-            if ex.lower() in title_lower:
+            if _kw_start_re(ex).search(title_lower):
                 return True
         return False
 
     def _parse_size(self, size_str: str) -> int:
         """Parse size string to bytes."""
-        size_str = size_str.upper().replace(',', '').replace(' ', '')
+        size_str = re.sub(r'\s+', '', size_str.upper().replace(',', ''))
         multipliers = {'KB': 1024, 'MB': 1024**2, 'GB': 1024**3, 'TB': 1024**4}
 
         for unit, mult in multipliers.items():

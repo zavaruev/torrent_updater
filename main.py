@@ -282,11 +282,11 @@ def _search_and_download_blocking(query: str, content_type: str, season, imdb_id
     never directly in the FastAPI event loop (SeleniumBase breaks otherwise)."""
     from seleniumbase import SB
     from search_and_download import (
-        search_rutracker,
-        select_best_torrent,
+        search_best_torrent,
         download_url_and_add_to_transmission,
         verify_jellyfin,
     )
+    from rutracker_scraper import RutrackerScraper
 
     login_username = os.environ.get('LOGIN_RUTRACKER')
     login_password = os.environ.get('PASSWORD_RUTRACKER')
@@ -300,24 +300,28 @@ def _search_and_download_blocking(query: str, content_type: str, season, imdb_id
         if not driver:
             return {"success": False, "error": "Failed to login to Rutracker"}
 
-        # Search
-        results = search_rutracker(sb, driver, query, content_type, season, imdb_id)
-        if not results:
-            return {"success": False, "error": "No results found"}
-
-        # Select best
-        best = select_best_torrent(results, content_type, season)
-        if not best:
-            return {"success": False, "error": "No suitable torrent found"}
+        # Single shared browser session (a second concurrent login triggers
+        # Cloudflare strictness). Settle before searching (human pace).
+        time.sleep(15)
+        scraper = RutrackerScraper.attach(sb, login_username, login_password)
+        try:
+            best = search_best_torrent(query, content_type == 'series', season, imdb_id, scraper=scraper)
+        except Exception as e:
+            logger.warning(f"Search failed: {e}")
+            return {"success": False, "error": f"No results found: {e}"}
 
         # Download and add to Transmission
         download_dir = '/movies' if content_type == 'movie' else '/series'
-        success = download_url_and_add_to_transmission(sb, driver, best['url'], download_dir, tr_host, tr_port, tr_user, tr_password)
+        success = download_url_and_add_to_transmission(sb, driver, best.url, download_dir, tr_host, tr_port, tr_user, tr_password)
 
         if not success:
             return {"success": False, "error": "Failed to download and add torrent"}
 
-        result = {"success": True, "torrent": best}
+        result = {"success": True, "torrent": {
+            "title": best.title, "url": best.url, "quality": best.quality,
+            "dub_studio": best.dub_studio, "seeders": best.seeders,
+            "size_gb": round(best.size_bytes / 1024 ** 3, 2),
+        }}
 
         # Verify in Jellyfin if requested
         if verify and imdb_id:
@@ -703,6 +707,41 @@ def _cf_point_click(driver) -> bool:
     return False
 
 
+def _cdp_load_and_solve(sb, driver, url: str) -> str:
+    """Full CDP sequence for a challenged page: attach (goes blank, that is
+    normal) -> CDP-context navigate to url -> AWAITED Turnstile solve ->
+    reconnect webdriver. Returns a short status string.
+    NOTE: plain sb.solve_captcha() without await is a no-op (returns an
+    un-awaited coroutine); it MUST be awaited. Never CDP-navigate blindly in
+    a loop: on tunnel stall the driver can die -> caller must treat failure
+    as a failed attempt and retry via the normal flow (SB recovers)."""
+    import asyncio
+    try:
+        logger.info("CDP attaching...")
+        sb.activate_cdp_mode()
+        logger.info("CDP attached OK")
+    except Exception as e:
+        return f"attach-fail {type(e).__name__}: {str(e)[:120]}"
+    try:
+        sb.goto(url)
+    except Exception as e:
+        return f"cdp-goto-fail {type(e).__name__}: {str(e)[:120]}"
+    time.sleep(8)
+    try:
+        logger.info("CDP solving Turnstile (awaited)...")
+        res = sb.solve_captcha()
+        if asyncio.iscoroutine(res):
+            res = asyncio.run(res)
+        logger.info(f"CDP solve returned: {res}")
+    except Exception as e:
+        return f"solve-fail {type(e).__name__}: {str(e)[:150]}"
+    time.sleep(5)
+    try:
+        sb.connect()
+    except Exception:
+        pass
+    return f"solved={res}"
+
 def _try_cookie_login(driver: WebDriver) -> bool:
     """Restores Rutracker session from RUTRACKER_BB_SESSION / RUTRACKER_BB_DATA
     env cookies (copied once from a manually logged-in browser). Bypasses the
@@ -869,10 +908,10 @@ def _try_login(sb, driver: WebDriver, login_username: str, login_password: str) 
                     break
                 if not _clicked:
                     _clicked = _click_cf_checkbox()
-                # If the widget won't click, try one awaited CDP solve.
+                # If the widget won't click, one full CDP reload+solve.
                 if not _cdp_tried and time.time() > deadline - 75:
                     _cdp_tried = True
-                    logger.info(f"CDP solve: {_cdp_solve()}")
+                    logger.info(f"CDP solve: {_cdp_load_and_solve(sb, driver, 'https://rutracker.org/forum/login.php')}")
             except Exception:
                 pass
             time.sleep(3)
@@ -1074,7 +1113,7 @@ def is_series_complete(text: str) -> bool:
         return True
     return False
 
-def _wait_for_clean_page(driver: WebDriver, timeout: int = 30) -> tuple[str, str]:
+def _wait_for_clean_page(driver: WebDriver, timeout: int = 30, sb=None, url: str = '') -> tuple[str, str]:
     """Returns (page_source, title), waiting out a Cloudflare 'Just a moment'
     managed challenge (it often auto-clears in seconds). Moves the mouse and
     scrolls a little while waiting — human-presence signal for behavioral
@@ -1086,6 +1125,7 @@ def _wait_for_clean_page(driver: WebDriver, timeout: int = 30) -> tuple[str, str
     _con_logged = False
     _moved = 0
     _clicks_done = 0
+    _wait_for_clean_page._cdp_done = False  # one CDP solve attempt per page
     while True:
         try:
             src = driver.page_source
@@ -1107,13 +1147,19 @@ def _wait_for_clean_page(driver: WebDriver, timeout: int = 30) -> tuple[str, str
                 except Exception as e:
                     logger.info(f"CF console unavailable: {e}")
             return src, title
-        # Click attempts while challenged (human-presence signal), max 2 per page.
+        # One awaited CDP solve per page while challenged (needs sb context).
         if _clicks_done < 2:
             _clicks_done += 1
             try:
                 _cf_point_click(driver)
             except Exception:
                 pass
+        if sb is not None and not getattr(_wait_for_clean_page, '_cdp_done', False):
+            _wait_for_clean_page._cdp_done = True
+            try:
+                logger.info(f"CDP viewtopic solve: {_cdp_load_and_solve(sb, driver, url)}")
+            except Exception as e:
+                logger.info(f"CDP viewtopic solve crashed: {e}")
         # human-like presence: small mouse moves + scroll
         try:
             from selenium.webdriver.common.action_chains import ActionChains
@@ -1130,13 +1176,13 @@ def _wait_for_clean_page(driver: WebDriver, timeout: int = 30) -> tuple[str, str
             pass
         _t.sleep(3)
 
-def is_torrent_updated(url: str, torrent_date: datetime.datetime, session: WebDriver, max_retries: int = 3) -> tuple[bool, str, str, str, bool]:
+def is_torrent_updated(url: str, torrent_date: datetime.datetime, session: WebDriver, max_retries: int = 3, sb=None) -> tuple[bool, str, str, str, bool]:
     """Checks if the torrent on the tracker is newer than the local one. Retries on failure.
     Returns: (is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete)
     """
     last_error = 'Неизвестная ошибка'
     for attempt in range(1, max_retries + 1):
-        result = _try_check_torrent(url, torrent_date, session)
+        result = _try_check_torrent(url, torrent_date, session, sb)
         is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete = result
         last_error = error_msg
         if local_date_str or tracker_date_str:  # got a real result
@@ -1147,7 +1193,7 @@ def is_torrent_updated(url: str, torrent_date: datetime.datetime, session: WebDr
             time.sleep(wait_sec)
     return (False, "", "", last_error, False)
 
-def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDriver) -> tuple[bool, str, str, str, bool]:
+def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDriver, sb=None) -> tuple[bool, str, str, str, bool]:
     """Returns: (is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete)
     is_season_complete: True when the rutracker page title contains e.g. 'Серии: 1-8 из 8'
     """
@@ -1162,7 +1208,7 @@ def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDr
         time.sleep(3)
 
         try:
-            page_source, _ = _wait_for_clean_page(driver, timeout=30)
+            page_source, _ = _wait_for_clean_page(driver, timeout=30, sb=sb, url=url)
             if not page_source:
                 raise RuntimeError("empty page")
         except Exception as exc:
@@ -1441,15 +1487,12 @@ def check_and_update_torrents():
         status_manager.update_status("idle")
         return
 
-    try:
-        driver = create_uc_driver()
-    except Exception as e:
-        logger.error(f"Failed to start UC browser: {e}")
-        status_manager.update_status("idle")
-        return
-
-    try:
-        session = uc_login(driver, LOGIN_RUTRACKER, PASSWORD_RUTRACKER)
+    # SB-managed browser (plain UC, no CDP navigate): sb handle is threaded
+    # through the check path so challenged pages can attempt one awaited
+    # CDP Turnstile solve. Raw-UC fallback (create_uc_driver/uc_login) kept
+    # below in this module if SB ever misbehaves.
+    with SB(uc=True, chromium_arg="--enable-unsafe-swiftshader") as sb:
+        session = create_session(sb, LOGIN_RUTRACKER, PASSWORD_RUTRACKER)
         if not session:
             logger.warning("Login failed completely. Will retry in 15 minutes.")
             status_manager.update_status("idle")
@@ -1483,7 +1526,7 @@ def check_and_update_torrents():
                 else:
                     torrent_date = datetime.datetime.fromtimestamp(int(torrent_date_ts))
 
-                is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete = is_torrent_updated(torrent_url, torrent_date, session)
+                is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete = is_torrent_updated(torrent_url, torrent_date, session, sb=sb)
 
                 if not local_date_str and not tracker_date_str:
                     status_manager.record_torrent_check(torrent.name, '?', '?', 'error', error_msg=error_msg, torrent_url=torrent_url)
@@ -1577,11 +1620,6 @@ def check_and_update_torrents():
         finally:
             status_manager.update_status("idle")
             logger.info("--- Check Cycle Finished ---")
-    finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
 
 if __name__ == "__main__":
     main()

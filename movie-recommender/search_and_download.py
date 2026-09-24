@@ -325,7 +325,8 @@ def _title_matches(title: str, words: list) -> bool:
     return all(w in tl for w in words)
 
 
-def search_best_torrent(query: str, is_series: bool, season: int = None, imdb_id: str = None) -> RutrackerTorrent:
+def search_best_torrent(query: str, is_series: bool, season: int = None, imdb_id: str = None,
+                      scraper=None) -> RutrackerTorrent:
     """Search Rutracker and return best matching torrent.
     Primary: tracker.php?nm=<query> (real site search, members only).
     Fallback: latest forum topics scan (old behavior).
@@ -341,13 +342,18 @@ def search_best_torrent(query: str, is_series: bool, season: int = None, imdb_id
     forum_url = RUTRACKER_TV if is_series else RUTRACKER_MOVIES
     logger.info(f"Searching Rutracker for: {query!r} (series={is_series}, season={season})")
 
-    scraper = RutrackerScraper(LOGIN_RUTRACKER, PASSWORD_RUTRACKER)
-    scraper.__enter__()
+    own_scraper = scraper is None
+    if own_scraper:
+        scraper = RutrackerScraper(LOGIN_RUTRACKER, PASSWORD_RUTRACKER)
+        scraper.__enter__()
 
     try:
         torrents = []
+        # Narrow server-side for series seasons (tracker matches all words,
+        # e.g. nm='simpsons 15' surfaces S15 packs instead of 300+ generic).
+        tracker_query = f"{query} {season}" if (is_series and season) else query
         try:
-            torrents = scraper.search_tracker(query, max_pages=3)
+            torrents = scraper.search_tracker(tracker_query, max_pages=3)
             logger.info(f"Tracker search returned {len(torrents)} torrents")
         except Exception as e:
             logger.warning(f"Tracker search failed, falling back to forum scan: {e}")
@@ -364,22 +370,29 @@ def search_best_torrent(query: str, is_series: bool, season: int = None, imdb_id
             torrents = [t for t in torrents if _title_matches(t.title, words)]
             logger.info(f"Query filter {words}: {before} -> {len(torrents)}")
 
-        # Filter and score
+        # Filter and score (with per-reason stats + samples for diagnostics).
+        from collections import Counter
+        dropped = Counter()
         filtered = []
         for t in torrents:
             if t.is_excluded:
+                dropped['excluded'] += 1
                 continue
             if not t.has_dubbing:
+                dropped['no_dubbing'] += 1
                 continue
             if t.seeders < 5:
+                dropped[f'seeders<{t.seeders}'] += 1
                 continue
             if not t.quality:
+                dropped['no_quality'] += 1
                 continue
 
             # For series, check if season matches
             if is_series and season:
                 t_season, _ = extract_season_episode(t.title)
                 if t_season and t_season != season:
+                    dropped[f'season{t_season}'] += 1
                     continue
 
             # Try to match with IMDB if provided
@@ -388,6 +401,10 @@ def search_best_torrent(query: str, is_series: bool, season: int = None, imdb_id
                 pass
 
             filtered.append(t)
+
+        logger.info(f"Filter stats: {dict(dropped)} kept={len(filtered)}")
+        for t in torrents[:3]:
+            logger.info(f"Sample: seeders={t.seeders} quality={t.quality} dub={t.dub_studio} size={t.size_str} | {t.title[:90]}")
 
         if not filtered:
             raise RuntimeError(f"No suitable torrents found for: {query}")
