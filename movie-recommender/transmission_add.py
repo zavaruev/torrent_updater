@@ -80,6 +80,19 @@ class TransmissionManager:
             logger.error(f"Failed to add torrent: {e}")
             return TorrentAddResult(success=False, error=str(e))
 
+    def set_comment(self, torrent_id: int, comment: str) -> bool:
+        """Set torrent comment (used to store the Rutracker topic URL so the
+        updater can track this torrent for updates)."""
+        if not self._client:
+            if not self.connect():
+                return False
+        try:
+            self._client.change_torrent(torrent_id, comment=comment)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set comment: {e}")
+            return False
+
     def add_torrent_from_url(self, url: str, download_dir: str,
                              paused: bool = False, labels: Optional[list] = None) -> TorrentAddResult:
         """Add torrent from magnet link or torrent URL."""

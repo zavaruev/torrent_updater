@@ -536,6 +536,9 @@ def download_and_add_to_transmission(torrent: RutrackerTorrent, driver: WebDrive
     if not result.success:
         raise RuntimeError(f"Failed to add to Transmission: {result.error}")
 
+    # Store topic URL as comment so the updater tracks this torrent.
+    tr.set_comment(result.torrent_id, torrent.url)
+
     logger.info(f"Added to Transmission: {result.name} (ID: {result.torrent_id})")
     return result.torrent_id
 
@@ -721,6 +724,9 @@ def download_url_and_add_to_transmission(sb, driver, torrent_url: str, download_
         result = tr.add_torrent(torrent_data, download_dir)
         if not result.success:
             raise RuntimeError(f'Failed to add to Transmission: {result.error}')
+
+        # Store topic URL as comment so the updater tracks this torrent.
+        tr.set_comment(result.torrent_id, torrent_url)
 
         logger.info(f'Added to Transmission: {result.name} (ID: {result.torrent_id})')
         return True
