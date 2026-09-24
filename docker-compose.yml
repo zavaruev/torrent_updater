@@ -15,7 +15,9 @@ services:
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /opt/data/cache:/opt/data/cache
-      - /tmp/jellyfin.db:/tmp/jellyfin.db:ro
+      # Jellyfin data dir (ro): WAL mode needs db + -wal + -shm together.
+      # jellyfin_sync.refresh_db_copy() snapshots it to /tmp/jellyfin.db each cycle.
+      - /mnt/media/docker-compose/jellyfin/config/data:/jellyfin-data:ro
       - /mnt/media/movies:/mnt/media/movies
       - /mnt/media/series:/mnt/media/series
     shm_size: 2g

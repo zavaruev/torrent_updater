@@ -6,6 +6,7 @@ Reads Jellyfin SQLite database to get watched history and full library inventory
 
 import sqlite3
 import logging
+import os
 from dataclasses import dataclass
 from typing import Set, List, Dict, Optional
 from pathlib import Path
@@ -14,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 # User 'alex' ID from Jellyfin
 ALEX_USER_ID = "F74D127E-0EB4-4591-A04C-494C33DF4C5E"
+# Read-only mount of the live Jellyfin data dir (WAL: db + -wal + -shm).
+JELLYFIN_DATA_DIR = "/jellyfin-data"
+JELLYFIN_DB_SOURCE = os.path.join(JELLYFIN_DATA_DIR, "jellyfin.db")
+# Local working copy: refresh_db_copy() snapshots the live DB here via the
+# sqlite backup API, so the recommender never locks Jellyfin's live files.
 JELLYFIN_DB_PATH = "/tmp/jellyfin.db"
 
 
@@ -205,11 +211,37 @@ class JellyfinSync:
         return progress.get(series_name.lower(), {}).get('seasons', set())
 
     def refresh_db_copy(self):
-        """Jellyfin DB is already mounted at /tmp/jellyfin.db - no copy needed."""
-        if Path(self.db_path).exists():
-            logger.info(f"Jellyfin DB already available at {self.db_path}")
-        else:
-            logger.error(f"Jellyfin DB not found at {self.db_path}")
+        """Snapshot the live Jellyfin DB to the local working copy.
+
+        Uses the sqlite3 backup API (consistent snapshot, does not lock the
+        live DB). Keeps the previous copy if the source is unavailable.
+        MUST be called before connect().
+        """
+        if not Path(JELLYFIN_DB_SOURCE).exists():
+            if Path(self.db_path).exists():
+                logger.warning(f"Jellyfin live DB missing at {JELLYFIN_DB_SOURCE}, reusing previous copy")
+            else:
+                logger.error(f"Jellyfin live DB not found at {JELLYFIN_DB_SOURCE} and no previous copy")
+            return
+        try:
+            # /tmp/jellyfin.db may be a stale directory left by the old broken
+            # bind-mount (docker creates a dir when the source file is missing).
+            if Path(self.db_path).is_dir() and not Path(self.db_path).is_symlink():
+                import shutil
+                shutil.rmtree(self.db_path)
+                logger.warning(f"Removed stale directory at {self.db_path} (leftover of broken mount)")
+            src = sqlite3.connect(f"file:{JELLYFIN_DB_SOURCE}?mode=ro", uri=True, timeout=30)
+            try:
+                dst = sqlite3.connect(self.db_path, timeout=30)
+                try:
+                    src.backup(dst)
+                finally:
+                    dst.close()
+            finally:
+                src.close()
+            logger.info(f"Jellyfin DB snapshot ready at {self.db_path}")
+        except Exception as e:
+            logger.error(f"Jellyfin DB snapshot failed ({e}), reusing previous copy if any")
 
 
 def normalize_title(title: str) -> str:

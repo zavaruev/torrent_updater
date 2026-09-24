@@ -160,7 +160,11 @@ async def trigger_check():
 
 @app.get("/api/recommendations")
 async def get_recommendations():
-    """Get cached movie/series recommendations."""
+    """Get cached movie/series recommendations.
+
+    Entries already downloaded (added=true) are dropped entirely — they are
+    visible in Jellyfin as fresh arrivals, no need to show them here.
+    """
     import json
     from pathlib import Path
     
@@ -168,7 +172,10 @@ async def get_recommendations():
     if cache_file.exists():
         try:
             with open(cache_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+            data['movies'] = [m for m in data.get('movies', []) if not m.get('added')]
+            data['series'] = [s for s in data.get('series', []) if not s.get('added')]
+            return data
         except Exception as e:
             logger.error("Failed to read recommendations cache: " + str(e))
     

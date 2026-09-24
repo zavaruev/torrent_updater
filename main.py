@@ -198,18 +198,25 @@ async def trigger_check():
 
 @app.get("/api/recommendations")
 async def get_recommendations():
-    """Get cached movie/series recommendations."""
+    """Get cached movie/series recommendations.
+
+    Entries already downloaded (added=true) are dropped entirely — they are
+    visible in Jellyfin as fresh arrivals, no need to show them here.
+    """
     import json
     from pathlib import Path
-    
+
     cache_file = Path("/opt/data/cache/movie_recommendations.json")
     if cache_file.exists():
         try:
             with open(cache_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+            data['movies'] = [m for m in data.get('movies', []) if not m.get('added')]
+            data['series'] = [s for s in data.get('series', []) if not s.get('added')]
+            return data
         except Exception as e:
             logger.error("Failed to read recommendations cache: " + str(e))
-    
+
     return {"movies": [], "series": [], "timestamp": None}
 
 @app.post("/api/add-torrent")
@@ -1455,6 +1462,34 @@ def main():
     if RECOMMENDER_AVAILABLE:
         schedule.every().day.at("03:00").do(run_daily_recommendations)
         logger.info("Scheduled daily recommendations at 03:00 MSK")
+        # Catch-up: the 03:00 slot is often missed (container down/rebuilding),
+        # so run the cycle now if the cache is missing or older than 24h.
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            _cache = _Path("/opt/data/cache/movie_recommendations.json")
+            _stale = True
+            if _cache.exists():
+                try:
+                    _ts = _json.loads(_cache.read_text(encoding='utf-8')).get('timestamp')
+                    _age = (datetime.datetime.now(datetime.timezone.utc)
+                            - datetime.datetime.fromisoformat(_ts)).total_seconds() if _ts else 1e9
+                    _stale = _age > 24 * 3600
+                except Exception:
+                    _stale = True
+            if _stale:
+                logger.info("Recommendations cache missing/stale (>24h), catch-up cycle in 30 min (after startup check)...")
+
+                def _delayed_recs():
+                    time.sleep(30 * 60)
+                    try:
+                        run_daily_recommendations()
+                    except Exception as e:
+                        logger.warning(f"Catch-up recommendations cycle failed: {e}")
+
+                threading.Thread(target=_delayed_recs, daemon=True).start()
+        except Exception as e:
+            logger.warning(f"Recommendations catch-up check failed: {e}")
     else:
         logger.warning("Daily recommendations NOT scheduled (recommender unavailable)")
 
