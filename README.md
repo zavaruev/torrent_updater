@@ -1,115 +1,114 @@
 # torrent_updater
 
-Автообновление сериалов и фильмов с RuTracker в Transmission с веб-интерфейсом
-и интеграцией с Jellyfin.
+Automatic updating of TV series and movies from RuTracker into Transmission, with
+a web interface and Jellyfin integration.
 
-Сервис периодически проверяет отслеживаемые раздачи, при появлении обновления
-(в том числе при завершении сезона) скачивает новый торрент **до** удаления
-старого, поддерживает ручной поиск по запросу и рекомендации фильмов/сериалов,
-фильтруя раздачи по совместимости с домашним оборудованием.
+The service periodically checks tracked torrents; when an update appears (including
+season completion) it downloads the new torrent **before** removing the old one,
+supports manual search by query and movie/series recommendations, filtering
+releases for compatibility with the home media setup.
 
-## Быстрый старт
+## Quick start
 
-**Docker (рекомендуется):**
+**Docker (recommended):**
 ```bash
 docker compose up -d --build
 ```
 
-**Локально:**
+**Local:**
 ```bash
-python main.py          # требуется .env в каталоге
+python main.py          # requires .env in the directory
 ```
 
-**Веб-интерфейс:** http://localhost:6050
+**Web interface:** http://localhost:6050
 
-## Конфигурация (`.env`)
+## Configuration (`.env`)
 
-Шаблон: скопируйте `.env.example` в `.env` и заполните своими значениями.
-Файл `.env` (все адреса/пароли, включая внутренние IP) находится в
-`.gitignore` и в репозиторий не попадает.
+Template: copy `.env.example` to `.env` and fill in your own values.
+The `.env` file (all addresses/passwords, including internal IPs) is listed in
+`.gitignore` and never reaches the repository.
 
-Обязательные переменные:
+Required variables:
 
-| Переменная | Описание |
+| Variable | Description |
 |---|---|
-| `LOGIN_RUTRACKER` / `PASSWORD_RUTRACKER` | учётные данные RuTracker |
-| `TR_HOST`, `TR_PORT` | адрес и порт Transmission RPC |
-| `TR_USER`, `TR_PASSWORD` | доступ к Transmission |
-| `DOWNLOAD_DIR` | каталог загрузок |
-| `HOME_DNS` | IP DNS-роутера, используется в `docker-compose.yml` (`dns: ${HOME_DNS}`) |
-| `JELLYFIN_URL` | адрес Jellyfin (для триггера скана библиотеки) |
+| `LOGIN_RUTRACKER` / `PASSWORD_RUTRACKER` | RuTracker credentials |
+| `TR_HOST`, `TR_PORT` | Transmission RPC address and port |
+| `TR_USER`, `TR_PASSWORD` | Transmission credentials |
+| `DOWNLOAD_DIR` | download directory |
+| `HOME_DNS` | router DNS IP, used in `docker-compose.yml` (`dns: ${HOME_DNS}`) |
+| `JELLYFIN_URL` | Jellyfin address (for library scan triggers) |
 
-Опциональные:
+Optional:
 
-| Переменная | Описание |
+| Variable | Description |
 |---|---|
-| `LE_ZAL_HOST` | адрес приставки LE-zal (справочно, см. AGENTS.md) |
-| `RUTRACKER_BB_SESSION`, `RUTRACKER_BB_DATA` | куки браузера для входа вместо форм (обход капчи) |
-| `CHECK_INTERVAL`, `CHECK_INTERVAL_UNIT` | период проверки (`minutes`/`hours`/`days`), по умолчанию 1 час |
-| `RUN_ON_STARTUP` | запуск проверки сразу при старте |
-| `FORCE_FORM_LOGIN` | принудительный вход через форму (игнорирует куки) |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram-уведомления (в коде отключены) |
+| `LE_ZAL_HOST` | address of the LE-zal set-top box (reference only, see AGENTS.md) |
+| `RUTRACKER_BB_SESSION`, `RUTRACKER_BB_DATA` | browser cookies for login instead of the form (captcha bypass) |
+| `CHECK_INTERVAL`, `CHECK_INTERVAL_UNIT` | check period (`minutes`/`hours`/`days`), default 1 hour |
+| `RUN_ON_STARTUP` | run a check right on startup |
+| `FORCE_FORM_LOGIN` | force form login (ignores cookies) |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram notifications (disabled in code) |
 
-Вход по кукам пробуется первым, форма логина — запасной вариант. Куки можно
-скопировать из браузера: F12 → Application → Cookies → `https://rutracker.org`.
+Cookie login is tried first, the login form is the fallback. Cookies can be copied
+from the browser: F12 → Application → Cookies → `https://rutracker.org`.
 
-## Возможности
+## Features
 
-- **Автообновление по расписанию** — проверка каждые `CHECK_INTERVAL`;
-  последние 100 записей лога доступны в веб-интерфейсе.
-- **Обнаружение завершённых сезонов** — по маркеру `Серии: 1-X из X` торрент
-  автоматически удаляется из Transmission.
-- **Отказоустойчивое обновление** — новый торрент сначала скачивается, и только
-  потом удаляется старый.
-- **Ручной поиск** (`POST /api/search-and-download`) — запрос на RuTracker,
-  выбор лучшего результата по скорингу и добавление в Transmission; тип
-  контента (сериал/фильм) определяется автоматически и маршрутизируется в
-  `/series` или `/movies`.
-- **Рекомендации** (`GET /api/recommendations`) — фильмы и сериалы по данным
-  IMDb, уже скачанный контент полностью скрывается из выдачи.
-- **Точечное добавление** (`POST /api/add-torrent`) — добавление по URL раздачи.
-- **Проверка вручную** (`POST /api/check`) — вне расписания.
+- **Scheduled auto-update** — checks every `CHECK_INTERVAL`; the last 100 log
+  entries are available in the web interface.
+- **Completed-season detection** — on the `Серии: 1-X из X` marker the torrent is
+  automatically removed from Transmission.
+- **Failure-safe updates** — the new torrent is downloaded first, and only then
+  the old one is removed.
+- **Manual search** (`POST /api/search-and-download`) — a RuTracker query, best
+  result picked by scoring and added to Transmission; the content type
+  (series/movie) is detected automatically and routed to `/series` or `/movies`.
+- **Recommendations** (`GET /api/recommendations`) — movies and series based on
+  IMDb data; already-downloaded content is fully hidden from the results.
+- **Targeted add** (`POST /api/add-torrent`) — add by torrent URL.
+- **Manual check** (`POST /api/check`) — run outside the schedule.
 
-### Фильтр совместимости с оборудованием
+### Hardware compatibility filter
 
-Раздачи, которые не воспроизведёт домашнее оборудование (LE-zal / Kodi),
-отсекаются на этапе парсинга. **Исключены:** HEVC/x265/H265, 2160p/4K/UHD,
-HDR/HDR10, DV (Dolby Vision), а также CAM/TS/Screener/одноголосые и прочее.
-**Пригодны:** h264/AVC/x264, 1080p/720p, WEB-DL/BDRip/Remux.
+Releases that the home equipment (LE-zal / Kodi) cannot play are cut off at the
+parsing stage. **Excluded:** HEVC/x265/H265, 2160p/4K/UHD, HDR/HDR10, DV (Dolby
+Vision), as well as CAM/TS/Screener/single-voice and others. **Suitable:**
+h264/AVC/x264, 1080p/720p, WEB-DL/BDRip/Remux.
 
-Список исключений — `EXCLUDE_KEYWORDS` в `movie-recommender/rutracker_scraper.py`
-(единый источник, остальные модули импортируют его).
+The exclusion list is `EXCLUDE_KEYWORDS` in `movie-recommender/rutracker_scraper.py`
+(single source of truth; the other modules import it).
 
-## Архитектура
+## Architecture
 
-- `main.py` — точка входа: расписание, веб-сервер FastAPI (порт 6050), логика
-  проверки раздач.
-- `movie-recommender/` — парсинг RuTracker (headless Chrome через SeleniumBase),
-  скоринг и фильтрация, рекомендации, постобработка загрузок.
-- `templates/index.html` — веб-интерфейс.
-- Transmission управляется через `transmission-rpc`.
+- `main.py` — entry point: scheduling, FastAPI web server (port 6050), torrent
+  check logic.
+- `movie-recommender/` — RuTracker parsing (headless Chrome via SeleniumBase),
+  scoring and filtering, recommendations, download post-processing.
+- `templates/index.html` — web interface.
+- Transmission is controlled via `transmission-rpc`.
 
-## Известные ограничения
+## Known limitations
 
-- **Cloudflare**: на страницах раздач/трекера автоматизированный Chrome получает
-  интерактивную проверку, которую сервер отклоняет. Индекс, статусы, история и
-  рекомендации работают; E2E-путь поиска ожидает решения (см. `AGENTS.md`).
-  Проверки не следует форсировать: пачки запросов повышают строгость Cloudflare —
-  один сессионный браузер, паузы 20–30 секунд между переходами.
-- **Telegram-уведомления** закомментированы в коде.
+- **Cloudflare**: on torrent/tracker pages automated Chrome gets an interactive
+  challenge that the server rejects. Index, statuses, history and recommendations
+  work; the end-to-end search path awaits a solution (see `AGENTS.md`). Do not
+  force these checks: bursts of requests raise Cloudflare's strictness — keep one
+  session browser with 20–30 second pauses between navigations.
+- **Telegram notifications** are commented out in the code.
 
 ## Jellyfin
 
-Контент идентифицируется в Jellyfin по NFO, который создаётся при наличии лейбла
-`imdb_*` у торрента. Учтите:
+Content is identified in Jellyfin by the NFO file, which is created when the
+torrent has an `imdb_*` label. Note:
 
-- для Jellyfin нужен рабочий DNS наружу (без него TMDB/IMDb недоступны);
-- **не удаляйте элементы библиотеки через `DELETE /Items`** — в актуальной версии
-  API это удаляет и сами файлы, несмотря на `deleteFile=false`; используйте
-  Refresh или правку NFO.
+- Jellyfin needs a working outbound DNS (without it TMDB/IMDb are unreachable);
+- **never delete library items via `DELETE /Items`** — in the current API version
+  this also deletes the files themselves despite `deleteFile=false`; use Refresh
+  or edit the NFO instead.
 
-Подробности и recipe — в [`AGENTS.md`](AGENTS.md).
+Details and the recipe are in [`AGENTS.md`](AGENTS.md).
 
-## Лицензия
+## License
 
-Личный проект, лицензия не указана.
+Personal project, no license specified.

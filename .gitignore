@@ -1,5 +1,5 @@
 .env
-# Файлы настроек (внутренние IP/пароли) — никогда не коммитятся
+# Settings files (internal IPs/passwords) — never committed
 .env.*
 !.env.example
 *.env
@@ -10,6 +10,6 @@ __pycache__/
 *.pyc
 *.log
 .vscode/
-# Резервные копии, создаваемые вручную (main.py.backup, index.html.bak и т.п.)
+# Manually created backups (main.py.backup, index.html.bak, etc.)
 *.bak
 *.backup

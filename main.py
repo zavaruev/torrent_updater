@@ -327,19 +327,19 @@ def _search_and_download_blocking(query: str, content_type: str, season, imdb_id
             labels.append(f"S{season:02d}")
         if imdb_id:
             labels.append(f"imdb_{imdb_id}")
-        # TODO(imdb-resolve): если вызывающий не передал imdb_id (например,
-        # ручной поиск из UI), лейбл imdb_* не ставится -> post_process_downloads.py
-        # пропустит торрент (нужен imdb_* лейбл) и NFO для Jellyfin не будет создан.
-        # Для фильмов это критично: без NFO Jellyfin идентифицирует файл по
-        # встроенным тегам MKV, а в релизах spartanec там мусор
-        # ("Release by spartanec", год из creation_time) -> фильм отображается
-        # с неправильным именем. Решение: при kind=='movie' и пустом imdb_id
-        # резолвить id через IMDb suggestion API
-        # (https://v2.sg.media-imdb.com/suggestion/<первая буква>/<urlencoded title>.json,
-        # ответ {"d":[{"id":"tt0462538","l":"The Simpsons Movie","y":2007,"qid":"movie"}]})
-        # и добавлять labels.append(f"imdb_{resolved_id}") ДО add_torrent.
-        # TODO(movie-nfo): либо расширить post_process_downloads.py, чтобы он
-        # сам резолвил imdb по title_ лейблу, если imdb_* отсутствует.
+        # TODO(imdb-resolve): if the caller did not pass imdb_id (e.g. manual
+        # search from the UI), the imdb_* label is not set -> post_process_downloads.py
+        # skips the torrent (it requires an imdb_* label) and no NFO is created for
+        # Jellyfin. For movies this is critical: without NFO Jellyfin identifies the
+        # file from built-in MKV tags, and spartanec releases contain garbage there
+        # ("Release by spartanec", year from creation_time) -> the movie shows up
+        # with a wrong name. Fix: when kind=='movie' and imdb_id is empty, resolve
+        # the id via the IMDb suggestion API
+        # (https://v2.sg.media-imdb.com/suggestion/<first letter>/<urlencoded title>.json,
+        # response {"d":[{"id":"tt0462538","l":"The Simpsons Movie","y":2007,"qid":"movie"}]})
+        # and do labels.append(f"imdb_{resolved_id}") BEFORE add_torrent.
+        # TODO(movie-nfo): or extend post_process_downloads.py so it resolves
+        # imdb from the title_ label itself when imdb_* is missing.
         logger.info(f"Detected kind={kind}, dir={download_dir} for: {best.title[:60]}")
         success = download_url_and_add_to_transmission(sb, driver, best.url, download_dir, tr_host, tr_port, tr_user, tr_password, labels=labels)
 
@@ -435,7 +435,7 @@ def send_telegram_notification(
 \U0001f517 <a href="{torrent_url}">\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043d\u0430 \u0442\u0440\u0435\u043a\u0435\u0440\u0435</a>
 """
     
-    # TODO: раскомментировать когда настроишь Telegram
+    # TODO: uncomment once Telegram is configured
     # if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     #     return
     # try:

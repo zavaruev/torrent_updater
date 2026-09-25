@@ -13,8 +13,8 @@ import os
 
 from jellyfin_sync import JellyfinSync
 
-# Адрес Jellyfin — из .env (JELLYFIN_URL); localhost-фолбэк корректен
-# при network_mode: host. Хардкод внутреннего IP запрещён (публичный репозиторий).
+# Jellyfin address comes from .env (JELLYFIN_URL); the localhost fallback is
+# correct under network_mode: host. Hardcoding internal IPs is forbidden (public repo).
 JELLYFIN_URL = os.getenv('JELLYFIN_URL', 'http://localhost:8096')
 
 logging.basicConfig(

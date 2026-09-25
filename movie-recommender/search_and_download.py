@@ -456,9 +456,9 @@ def score_torrent(torrent: RutrackerTorrent, season: int = None) -> int:
     score = 0
 
     quality_rank = {
-        # NB (сент. 2026): 2160p/4K/HDR/DV/HEVC/x265 убраны из рейтинга —
-        # LE-zal их не воспроизводит, такие раздачи отсекает EXCLUDE_KEYWORDS
-        # (rutracker_scraper.py) ещё до скоринга. Здесь — только совместимое.
+        # NB (Sep 2026): 2160p/4K/HDR/DV/HEVC/x265 are removed from the ranking —
+        # LE-zal does not play them; such releases are cut by EXCLUDE_KEYWORDS
+        # (rutracker_scraper.py) before scoring. Only compatible entries here.
         'WEB-DL 1080p': 100,
         'BDRip 1080p': 95,
         'Remux 1080p': 90,
@@ -603,8 +603,8 @@ def _verify_jellyfin_cli(imdb_id: str, is_series: bool, season: int = None, titl
         jellyfin.connect()
 
         # Trigger library scan
-        # TODO(jellyfin): адрес Jellyfin берётся из .env (JELLYFIN_URL),
-        # localhost-фолбэк корректен при network_mode: host.
+        # TODO(jellyfin): the Jellyfin address comes from .env (JELLYFIN_URL);
+        # the localhost fallback is correct under network_mode: host.
         import requests
         try:
             resp = requests.post(

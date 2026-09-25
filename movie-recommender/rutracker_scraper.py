@@ -47,39 +47,39 @@ PREFERRED_DUB_STUDIOS = [
 ]
 
 # Exclude keywords (bad quality, single voice, cams)
-# NB: 'TS', 'TC', 'MOD', 'Scr' живут в EXCLUDE_WHOLE_WORDS ниже — им нужна
-# граница слова с обеих сторон (см. комментарий там).
+# NB: 'TS', 'TC', 'MOD', 'Scr' live in EXCLUDE_WHOLE_WORDS below — they need
+# a word boundary on both sides (see the comment there).
 EXCLUDE_KEYWORDS = [
     'Камрип', 'CAMRip', 'Screener', 
     'DVDRip', 'HDRip', 'одноголос', 'закадров', 
     'One Voice', 'Single Voice', 'одноголосый',
     'Перевод: Одноголосый', 'Перевод: Закадровый',
     'AMZN', 'iTunes', 'VHS', 'DVD5', 'DVD9',
-    # LE-zal (Kodi 21.3) НЕ воспроизводит эти форматы —
-    # не скачивать раздачи с ними (требование пользователя, сент. 2026):
-    # HEVC/x265/H265 — кодек, 2160p/4K/UHD — разрешение, HDR/HDR10 и
-    # DV (Dolby Vision) — HDR-семейство цвета (без поддержки HDR даёт
-    # зелёно-фиолетовую картинку). Синонимы перечислены все, т.к. релизы
-    # подписаны по-разному ("HEVC", "x265", "H.265", "UHD-BD" и т.д.).
-    # _kw_start_re() матчит по началу слова: "Adventure"/"Advance" НЕ
-    # заденет 'DV' (lookbehind), а "HDRip" и так исключён выше.
+    # LE-zal (Kodi 21.3) does NOT play these formats —
+    # do not download releases containing them (user requirement, Sep 2026):
+    # HEVC/x265/H265 — codec, 2160p/4K/UHD — resolution, HDR/HDR10 and
+    # DV (Dolby Vision) — HDR color family (without HDR support they render
+    # a green-purple picture). All synonyms are listed because releases are
+    # tagged differently ("HEVC", "x265", "H.265", "UHD-BD", etc.).
+    # _kw_start_re() matches at word start: "Adventure"/"Advance" is NOT
+    # hit by 'DV' (lookbehind), and "HDRip" is already excluded above.
     'HEVC', 'x265', 'H265', 'H.265',
     '2160p', '4K', 'UHD',
     'HDR', 'DV',
 ]
 
-# Ключи, которым нужна граница слова с ОБЕИХ сторон: при префиксном матчинге
-# они задевали реальные названия (проверено, сент. 2026):
+# Keys that need a word boundary on BOTH sides: with prefix matching they
+# hit real titles (verified, Sep 2026):
 #   'MOD' → "Modern Family", 'Scr' → "Scrubs", 'TS' → "Tsunami".
-# Целое слово по-прежнему ловит их теги: "TS-Rip", "TC", "[MOD]", "Scr".
+# Whole-word matching still catches their tags: "TS-Rip", "TC", "[MOD]", "Scr".
 EXCLUDE_WHOLE_WORDS = ['TS', 'TC', 'MOD', 'Scr']
 
 # Quality keywords (good quality for LE-Zal/Kodi)
-# NB: 2160p/4K/HDR/DV/HEVC/x265 СУЩЕСТВЕННО убраны — они в EXCLUDE_KEYWORDS
-# (LE-zal их не играет), здесь только то, что приставка точно воспроизводит.
-# TODO(dead-code): QUALITY_KEYWORDS нигде не используется (только определение);
-# фактический фильтр — EXCLUDE_KEYWORDS + таблицы скоринга. Удалить после
-# проверки, что сторонние скрипты не импортируют эту константу.
+# NB: 2160p/4K/HDR/DV/HEVC/x265 are deliberately removed — they are in
+# EXCLUDE_KEYWORDS (LE-zal cannot play them); here only what the box surely plays.
+# TODO(dead-code): QUALITY_KEYWORDS is unused anywhere (definition only);
+# the real filter is EXCLUDE_KEYWORDS + scoring tables. Remove after checking
+# that no third-party scripts import this constant.
 QUALITY_KEYWORDS = [
     'WEB-DL', 'WEBRip', 'BDRip', 'BluRay', 'Remux',
     '1080p', '720p',
@@ -103,8 +103,8 @@ def _whole_word_re(kw: str):
 
 
 def is_excluded_title(title: str) -> bool:
-    """True if title contains any exclusion keyword — общий вход для всех
-    фильтров (scraper, on_demand, dubbing-check), чтобы списки не расходились."""
+    """True if the title contains any exclusion keyword — the single entry point
+    for all filters (scraper, on_demand, dubbing-check) so the lists never diverge."""
     title_lower = title.lower()
     if any(_kw_start_re(ex).search(title_lower) for ex in EXCLUDE_KEYWORDS):
         return True
@@ -874,8 +874,8 @@ class RutrackerScraper:
         return ' '.join(parts) if parts else None
 
     def _check_excluded(self, title: str) -> bool:
-        """Check if title has exclusion keywords (общий is_excluded_title:
-        два списка — EXCLUDE_KEYWORDS + EXCLUDE_WHOLE_WORDS)."""
+        """Check if the title has exclusion keywords (shared is_excluded_title:
+        two lists — EXCLUDE_KEYWORDS + EXCLUDE_WHOLE_WORDS)."""
         return is_excluded_title(title)
 
     def _parse_size(self, size_str: str) -> int:

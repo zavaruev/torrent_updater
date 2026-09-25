@@ -38,8 +38,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Quality ranking (higher = better)
-# NB (сент. 2026): 2160p/4K/HDR/DV убраны — LE-zal их не воспроизводит,
-# такие раздачи отсекает EXCLUDE_KEYWORDS (rutracker_scraper.py) до скоринга.
+# NB (Sep 2026): 2160p/4K/HDR/DV are removed — LE-zal does not play them;
+# such releases are cut by EXCLUDE_KEYWORDS (rutracker_scraper.py) before scoring.
 QUALITY_RANK = {
     'WEB-DL 1080p': 100,
     'BDRip 1080p': 95,
@@ -63,7 +63,7 @@ PREFERRED_STUDIOS = [
     'Novice', 'HDRezka', 'West Video', 'MobilStudia', 'Vozrozhdenie'
 ]
 
-# Фильтр исключений — см. rutracker_scraper.is_excluded_title (единый вход).
+# Exclusion filter — see rutracker_scraper.is_excluded_title (single entry point).
 
 MIN_SEEDERS = 5
 MOVIE_SIZE_MIN = 1.5 * 1024**3  # 1.5 GB
@@ -118,10 +118,10 @@ def extract_season_episode(title: str) -> tuple:
         r'S(\d{1,2})[Ee](\d{1,2})',           # S01E01
         r'S(\d{1,2})\b',                       # S01
         r'Season\s+(\d{1,2})',                  # Season 1
-        r'(\d{1,2})\s*сезон',                  # 1 сезон
-        r'(\d{1,2})\s*сер(ия|\.|$)',           # 1 серия
-        r'Сезон:\s*(\d{1,2})',                 # Сезон: 4
-        r'Серия:\s*(\d{1,2})',                 # Серия: 12
+        r'(\d{1,2})\s*сезон',                  # e.g. "1 сезон"
+        r'(\d{1,2})\s*сер(ия|\.|$)',           # e.g. "1 серия"
+        r'Сезон:\s*(\d{1,2})',                 # e.g. "Сезон: 4"
+        r'Серия:\s*(\d{1,2})',                 # e.g. "Серия: 12"
     ]
     
     for pattern in patterns:
@@ -147,9 +147,9 @@ def has_dubbing(title: str) -> tuple:
 def is_excluded(title: str) -> bool:
     """Check if title has exclusion keywords.
 
-    Делегирует rutracker_scraper.is_excluded_title — единому входу для всех
-    фильтров (два списка: EXCLUDE_KEYWORDS c префиксным матчингом и
-    EXCLUDE_WHOLE_WORDS с границей слова с обеих сторон).
+    Delegates to rutracker_scraper.is_excluded_title — the single entry point for
+    all filters (two lists: EXCLUDE_KEYWORDS with prefix matching and
+    EXCLUDE_WHOLE_WORDS with a word boundary on both sides).
     """
     return is_excluded_title(title)
 

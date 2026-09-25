@@ -4,7 +4,7 @@ services:
     container_name: torrent-updater
     network_mode: host
     dns:
-      # DNS-роутера задаётся в .env (HOME_DNS) — внутренние IP не хранятся в git.
+      # Router DNS is set in .env (HOME_DNS) — internal IPs are never stored in git.
       - ${HOME_DNS:?HOME_DNS is not set in .env}
     restart: always
     env_file:

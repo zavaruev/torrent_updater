@@ -234,8 +234,8 @@ class MovieRecommender:
         score = 0
 
         # Quality ranking (higher = better) - matches new format "SOURCE RESOLUTION HDR"
-        # NB (сент. 2026): 2160p/4K/HDR/DV/HEVC/x265 убраны — LE-zal их не
-        # воспроизводит, такие раздачи отсекает EXCLUDE_KEYWORDS до скоринга.
+        # NB (Sep 2026): 2160p/4K/HDR/DV/HEVC/x265 are removed — LE-zal does not
+        # play them; such releases are cut by EXCLUDE_KEYWORDS before scoring.
         quality_rank = {
             'WEB-DL 1080p': 100,
             'BDRip 1080p': 95,
@@ -474,14 +474,15 @@ class MovieRecommender:
         """Extract season and episode from torrent title."""
         import re
 
-        # Patterns: S01E01, S01, Season 1, 1 сезон, 1 серия, Сезон: 4, Сезон 4
+        # Patterns: S01E01, S01, Season 1, and the Russian word forms ("1 сезон",
+        # "1 серия", "Сезон: 4", "Сезон 4")
         patterns = [
             r'S(\d{1,2})[Ee](\d{1,2})',           # S01E01
             r'S(\d{1,2})\b',                       # S01
             r'Season\s+(\d{1,2})',                 # Season 1
-            r'Сезон\s*[:]?\s*(\d{1,2})',           # Сезон: 4, Сезон 4
-            r'(\d{1,2})\s*сезон',                  # 1 сезон
-            r'(\d{1,2})\s*сер(ия|\.|$)',           # 1 серия
+            r'Сезон\s*[:]?\s*(\d{1,2})',           # e.g. "Сезон: 4", "Сезон 4"
+            r'(\d{1,2})\s*сезон',                  # e.g. "1 сезон"
+            r'(\d{1,2})\s*сер(ия|\.|$)',           # e.g. "1 серия"
         ]
 
         for pattern in patterns:

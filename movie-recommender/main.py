@@ -264,8 +264,8 @@ async def search_and_download(request: Request):
         
         login_username = os.environ.get('LOGIN_RUTRACKER')
         login_password = os.environ.get('PASSWORD_RUTRACKER')
-        # Адрес Transmission — только из .env (TR_HOST); localhost — фолбэк
-        # для network_mode: host (контейнер видит хостовый transmission).
+        # Transmission address comes only from .env (TR_HOST); localhost is the
+        # fallback for network_mode: host (the container sees the host's transmission).
         tr_host = os.environ.get('TR_HOST', 'localhost')
         tr_port = int(os.environ.get('TR_PORT', 9091))
         tr_user = os.environ.get('TR_USER')
@@ -356,7 +356,7 @@ def send_telegram_notification(
 \U0001f517 <a href="{torrent_url}">\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043d\u0430 \u0442\u0440\u0435\u043a\u0435\u0440\u0435</a>
 """
     
-    # TODO: раскомментировать когда настроишь Telegram
+    # TODO: uncomment once Telegram is configured
     # if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     #     return
     # try:

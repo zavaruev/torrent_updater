@@ -3,8 +3,8 @@
 Transmission torrent addition module.
 Adds torrents to Transmission with correct download directories.
 
-Все адреса/учётки — только из окружения (.env): никаких хардкодов,
-чтобы внутренние IP и пароли не попадали в git.
+All addresses/credentials come from the environment (.env) only: no hardcoding,
+so internal IPs and passwords never end up in git.
 """
 
 import logging
@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 MOVIES_DOWNLOAD_DIR = "/movies"      # Maps to /mnt/media/movies on host
 SERIES_DOWNLOAD_DIR = "/series"      # Maps to /mnt/media/series on host
 
-# Fallback-дефолты на localhost: и контейнер (network_mode: host), и локальный
-# запуск ходят в Transmission на том же хосте. Реальные значения — в .env
-# (TR_HOST/TR_PORT/TR_USER/TR_PASSWORD), передаётся через env_file.
+# Fallback defaults point to localhost: both the container (network_mode: host)
+# and a local run talk to Transmission on the same host. Real values live in .env
+# (TR_HOST/TR_PORT/TR_USER/TR_PASSWORD), passed via env_file.
 TRANSMISSION_HOST = os.getenv('TR_HOST', 'localhost')
 TRANSMISSION_PORT = int(os.getenv('TR_PORT', '9091'))
 TRANSMISSION_USER = os.getenv('TR_USER', '')
@@ -43,9 +43,9 @@ class TransmissionManager:
 
     def __init__(self, host: str = None, port: int = None,
                  username: str = None, password: str = None):
-        # Ленивое чтение env в момент создания объекта: модуль может быть
-        # импортирован до load_dotenv(), а рекомендации/поиск создают
-        # TransmissionManager() уже после загрузки .env.
+        # Lazy env read at object creation time: the module may be imported
+        # before load_dotenv(), while recommendations/search construct
+        # TransmissionManager() only after .env is loaded.
         self.host = host or os.getenv('TR_HOST', TRANSMISSION_HOST)
         self.port = port or int(os.getenv('TR_PORT', str(TRANSMISSION_PORT)))
         self.username = username if username is not None else os.getenv('TR_USER', TRANSMISSION_USER)
