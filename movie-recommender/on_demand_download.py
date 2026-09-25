@@ -24,7 +24,10 @@ sys.path.insert(0, '/opt/data/scripts/movie-recommender')
 from dotenv import load_dotenv
 # load_dotenv('/mnt/media/docker-compose/torrent_updater/.env')  # load_dotenv() will find .env in working dir
 
-from rutracker_scraper import RutrackerScraper, RUTRACKER_MOVIES, RUTRACKER_TV, _kw_start_re
+from rutracker_scraper import (
+    RutrackerScraper, RUTRACKER_MOVIES, RUTRACKER_TV,
+    is_excluded_title,
+)
 from transmission_add import TransmissionManager, MOVIES_DOWNLOAD_DIR, SERIES_DOWNLOAD_DIR
 
 # Setup logging
@@ -60,18 +63,7 @@ PREFERRED_STUDIOS = [
     'Novice', 'HDRezka', 'West Video', 'MobilStudia', 'Vozrozhdenie'
 ]
 
-EXCLUDE_KEYWORDS = [
-    'Камрип', 'CAMRip', 'TS', 'TC', 'Scr', 'Screener', 
-    'DVDRip', 'HDRip', 'одноголос', 'закадров', 
-    'One Voice', 'Single Voice', 'одноголосый',
-    'Перевод: Одноголосый', 'Перевод: Закадровый',
-    'AMZN', 'iTunes', 'MOD', 'VHS', 'DVD5', 'DVD9',
-    # LE-zal не воспроизводит: HEVC/x265, 2160p/4K/UHD, HDR, DV
-    # (см. EXCLUDE_KEYWORDS в rutracker_scraper.py — список синхронизировать!)
-    'HEVC', 'x265', 'H265', 'H.265',
-    '2160p', '4K', 'UHD',
-    'HDR', 'DV',
-]
+# Фильтр исключений — см. rutracker_scraper.is_excluded_title (единый вход).
 
 MIN_SEEDERS = 5
 MOVIE_SIZE_MIN = 1.5 * 1024**3  # 1.5 GB
@@ -155,15 +147,11 @@ def has_dubbing(title: str) -> tuple:
 def is_excluded(title: str) -> bool:
     """Check if title has exclusion keywords.
 
-    Match by word start (same as rutracker_scraper._check_excluded), NOT by
-    plain substring: with substrings short keys like 'DV' or '4K' would hit
-    innocent titles ("Adventure", "1/4Kg") and 'TS' — any "...ts..." word.
+    Делегирует rutracker_scraper.is_excluded_title — единому входу для всех
+    фильтров (два списка: EXCLUDE_KEYWORDS c префиксным матчингом и
+    EXCLUDE_WHOLE_WORDS с границей слова с обеих сторон).
     """
-    title_lower = title.lower()
-    for ex in EXCLUDE_KEYWORDS:
-        if _kw_start_re(ex).search(title_lower):
-            return True
-    return False
+    return is_excluded_title(title)
 
 
 def check_quality(title: str) -> Optional[str]:

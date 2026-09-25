@@ -47,12 +47,14 @@ PREFERRED_DUB_STUDIOS = [
 ]
 
 # Exclude keywords (bad quality, single voice, cams)
+# NB: 'TS', 'TC', 'MOD', 'Scr' живут в EXCLUDE_WHOLE_WORDS ниже — им нужна
+# граница слова с обеих сторон (см. комментарий там).
 EXCLUDE_KEYWORDS = [
-    'Камрип', 'CAMRip', 'TS', 'TC', 'Scr', 'Screener', 
+    'Камрип', 'CAMRip', 'Screener', 
     'DVDRip', 'HDRip', 'одноголос', 'закадров', 
     'One Voice', 'Single Voice', 'одноголосый',
     'Перевод: Одноголосый', 'Перевод: Закадровый',
-    'AMZN', 'iTunes', 'MOD', 'VHS', 'DVD5', 'DVD9',
+    'AMZN', 'iTunes', 'VHS', 'DVD5', 'DVD9',
     # LE-zal (Kodi 21.3, 192.0.2.164) НЕ воспроизводит эти форматы —
     # не скачивать раздачи с ними (требование пользователя, сент. 2026):
     # HEVC/x265/H265 — кодек, 2160p/4K/UHD — разрешение, HDR/HDR10 и
@@ -66,9 +68,18 @@ EXCLUDE_KEYWORDS = [
     'HDR', 'DV',
 ]
 
+# Ключи, которым нужна граница слова с ОБЕИХ сторон: при префиксном матчинге
+# они задевали реальные названия (проверено, сент. 2026):
+#   'MOD' → "Modern Family", 'Scr' → "Scrubs", 'TS' → "Tsunami".
+# Целое слово по-прежнему ловит их теги: "TS-Rip", "TC", "[MOD]", "Scr".
+EXCLUDE_WHOLE_WORDS = ['TS', 'TC', 'MOD', 'Scr']
+
 # Quality keywords (good quality for LE-Zal/Kodi)
 # NB: 2160p/4K/HDR/DV/HEVC/x265 СУЩЕСТВЕННО убраны — они в EXCLUDE_KEYWORDS
 # (LE-zal их не играет), здесь только то, что приставка точно воспроизводит.
+# TODO(dead-code): QUALITY_KEYWORDS нигде не используется (только определение);
+# фактический фильтр — EXCLUDE_KEYWORDS + таблицы скоринга. Удалить после
+# проверки, что сторонние скрипты не импортируют эту константу.
 QUALITY_KEYWORDS = [
     'WEB-DL', 'WEBRip', 'BDRip', 'BluRay', 'Remux',
     '1080p', '720p',
@@ -77,9 +88,29 @@ QUALITY_KEYWORDS = [
 
 
 def _kw_start_re(kw: str):
-    """Keyword must start at a word boundary (avoids 'TC' matching 'Match',
-    'MOD' matching 'Modern', 'Scr' matching 'Description')."""
+    """Keyword must start at a word boundary (avoids 'TS' matching 'Sports',
+    'Scr' matching 'Description'). Prefix-only by design: stems like
+    'одноголос' must cover all word forms. Short keys that over-match as
+    prefixes ('MOD' vs "Modern") are in EXCLUDE_WHOLE_WORDS instead."""
     return re.compile(r'(?<![a-zа-яё0-9])' + re.escape(kw.lower()))
+
+
+def _whole_word_re(kw: str):
+    """Keyword must match a complete word (both boundaries)."""
+    return re.compile(
+        r'(?<![a-zа-яё0-9])' + re.escape(kw.lower()) + r'(?![a-zа-яё0-9])'
+    )
+
+
+def is_excluded_title(title: str) -> bool:
+    """True if title contains any exclusion keyword — общий вход для всех
+    фильтров (scraper, on_demand, dubbing-check), чтобы списки не расходились."""
+    title_lower = title.lower()
+    if any(_kw_start_re(ex).search(title_lower) for ex in EXCLUDE_KEYWORDS):
+        return True
+    if any(_whole_word_re(ex).search(title_lower) for ex in EXCLUDE_WHOLE_WORDS):
+        return True
+    return False
 
 
 @dataclass
@@ -781,9 +812,8 @@ class RutrackerScraper:
         title_lower = title.lower()
 
         # Check for exclusion keywords first
-        for ex in EXCLUDE_KEYWORDS:
-            if _kw_start_re(ex).search(title_lower):
-                return False, None
+        if is_excluded_title(title):
+            return False, None
 
         # Check for preferred studios
         for studio in PREFERRED_DUB_STUDIOS:
@@ -844,12 +874,9 @@ class RutrackerScraper:
         return ' '.join(parts) if parts else None
 
     def _check_excluded(self, title: str) -> bool:
-        """Check if title has exclusion keywords."""
-        title_lower = title.lower()
-        for ex in EXCLUDE_KEYWORDS:
-            if _kw_start_re(ex).search(title_lower):
-                return True
-        return False
+        """Check if title has exclusion keywords (общий is_excluded_title:
+        два списка — EXCLUDE_KEYWORDS + EXCLUDE_WHOLE_WORDS)."""
+        return is_excluded_title(title)
 
     def _parse_size(self, size_str: str) -> int:
         """Parse size string to bytes."""

@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 *.log
 .vscode/
+# Резервные копии, создаваемые вручную (main.py.backup, index.html.bak и т.п.)
+*.bak
+*.backup

@@ -59,10 +59,13 @@ Cloudflare показывает интерактивную проверку на
   (есть ещё LE-Kitchen/LE-spalnya/LE-vlada — не путать). Требование пользователя:
   скачивать только раздачи, которые приставка проиграет без проблем.
 - **Исключено: HEVC/x265/H265/H.265, 2160p/4K/UHD, HDR/HDR10, DV (Dolby Vision).**
-  Список — `EXCLUDE_KEYWORDS` в `movie-recommender/rutracker_scraper.py`
-  и его копия в `on_demand_download.py` (**держать синхронизированными!**).
-- Матчинг — по началу слова (`_kw_start_re`, lookbehind), НЕ подстрокой:
-  иначе `'DV'` заденет "Adventure", `'TS'` — любое "...ts...".
+  Единственный источник — `EXCLUDE_KEYWORDS` в `movie-recommender/rutracker_scraper.py`;
+  `on_demand_download.py` импортирует его (локальной копии больше нет).
+- Матчинг — общий вход `is_excluded_title()`: по началу слова (`_kw_start_re`,
+  lookbehind) для основного списка + целое слово (`_whole_word_re`) для коротких
+  ключей `EXCLUDE_WHOLE_WORDS` (`TS`, `TC`, `MOD`, `Scr`) — иначе `'MOD'` заденет
+  "Modern Family", `'Scr'` — "Scrubs", `'TS'` — "Tsunami". Подстрочный матчинг
+  не использовать: `'DV'` поймал бы "Adventure".
 - Таблицы скоринга (`quality_rank` в `search_and_download.py`/`recommender.py`/
   `QUALITY_RANK` в `on_demand_download.py`) очищены от 4K/HDR/DV/HEVC-бонусов.
 - Пригодны для LE-zal: h264/AVC/x264, 1080p/720p, WEB-DL/BDRip/Remux.
