@@ -327,6 +327,19 @@ def _search_and_download_blocking(query: str, content_type: str, season, imdb_id
             labels.append(f"S{season:02d}")
         if imdb_id:
             labels.append(f"imdb_{imdb_id}")
+        # TODO(imdb-resolve): если вызывающий не передал imdb_id (например,
+        # ручной поиск из UI), лейбл imdb_* не ставится -> post_process_downloads.py
+        # пропустит торрент (нужен imdb_* лейбл) и NFO для Jellyfin не будет создан.
+        # Для фильмов это критично: без NFO Jellyfin идентифицирует файл по
+        # встроенным тегам MKV, а в релизах spartanec там мусор
+        # ("Release by spartanec", год из creation_time) -> фильм отображается
+        # с неправильным именем. Решение: при kind=='movie' и пустом imdb_id
+        # резолвить id через IMDb suggestion API
+        # (https://v2.sg.media-imdb.com/suggestion/<первая буква>/<urlencoded title>.json,
+        # ответ {"d":[{"id":"tt0462538","l":"The Simpsons Movie","y":2007,"qid":"movie"}]})
+        # и добавлять labels.append(f"imdb_{resolved_id}") ДО add_torrent.
+        # TODO(movie-nfo): либо расширить post_process_downloads.py, чтобы он
+        # сам резолвил imdb по title_ лейблу, если imdb_* отсутствует.
         logger.info(f"Detected kind={kind}, dir={download_dir} for: {best.title[:60]}")
         success = download_url_and_add_to_transmission(sb, driver, best.url, download_dir, tr_host, tr_port, tr_user, tr_password, labels=labels)
 

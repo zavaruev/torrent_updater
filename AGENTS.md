@@ -34,6 +34,26 @@ Cloudflare показывает интерактивную проверку на
 Поиск по запросу (`tracker.php?nm=`) реализован (`RutrackerScraper.search_tracker`
 + фильтр слов запроса), но ждёт прохождения проверки для E2E-теста.
 
+## Jellyfin: идентификация медиа (сент. 2026)
+- **DNS**: в `docker-compose.yml` Jellyfin добавлен `dns: [192.0.2.1]` —
+  без этого `api.themoviedb.org` блокируется (DNS отдаёт 127.0.0.1, даже 8.8.8.8
+  хакнут), все онлайн-провайдеры падают с "Connection refused" и контент
+  не идентифицируется. DNS роутера (fake-ip туннеля) отдаёт рабочий адрес.
+- **NFO для фильмов**: `post_process_downloads.py` создаёт NFO только при
+  наличии лейбла `imdb_*` у торрента. Без NFO Jellyfin берёт встроенный Title-тег
+  MKV (в релизах spartanec это мусор "Release by spartanec"). См. TODO(imdb-resolve)
+  в `main.py` — резолв imdb_id при ручном поиске.
+- **Корректный imdbid**: The Simpsons Movie (2007) = `tt0462538`
+  (НЕ tt0449088 — это Пираты Карибского моря). Проверять через
+  `https://v2.sg.media-imdb.com/suggestion/<буква>/<title>.json`.
+- **ОПАСНО: `DELETE /Items/{id}?deleteFile=false` в Jellyfin удаляет файлы!**
+  Параметр не сработал (июль-версия API), в логе "Deleting item path ... .mkv" —
+  файл 25 ГБ и NFO удалились, пришлось перекачивать. Никогда не удалять элементы
+  библиотеки через API — только переидентифицировать (Refresh) или править NFO.
+- **Refresh API**: `POST /Items/{id}/Refresh?MetadataRefreshMode=2&ImageRefreshMode=2`
+  (enum только числом: 2=Full/DownloadAll), auth: `Authorization: MediaBrowser Token=<key>`.
+  Ключ в таблице `ApiKeys` (имя `hermes`) в `jellyfin.db`.
+
 ## Архитектура
 - **Точка входа**: `main.py:562` — `check_and_update_torrents` по расписанию
 - **Веб-сервер**: FastAPI на порту 6050, шаблон `templates/index.html`
