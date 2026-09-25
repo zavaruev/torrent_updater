@@ -54,6 +54,20 @@ Cloudflare показывает интерактивную проверку на
   (enum только числом: 2=Full/DownloadAll), auth: `Authorization: MediaBrowser Token=<key>`.
   Ключ в таблице `ApiKeys` (имя `hermes`) в `jellyfin.db`.
 
+## Фильтр совместимости с оборудованием (LE-zal, сент. 2026)
+- **LE-zal = Kodi 21.3**, в HomeAssistant запись `kodi` → `192.0.2.164:8080`
+  (есть ещё LE-Kitchen/LE-spalnya/LE-vlada — не путать). Требование пользователя:
+  скачивать только раздачи, которые приставка проиграет без проблем.
+- **Исключено: HEVC/x265/H265/H.265, 2160p/4K/UHD, HDR/HDR10, DV (Dolby Vision).**
+  Список — `EXCLUDE_KEYWORDS` в `movie-recommender/rutracker_scraper.py`
+  и его копия в `on_demand_download.py` (**держать синхронизированными!**).
+- Матчинг — по началу слова (`_kw_start_re`, lookbehind), НЕ подстрокой:
+  иначе `'DV'` заденет "Adventure", `'TS'` — любое "...ts...".
+- Таблицы скоринга (`quality_rank` в `search_and_download.py`/`recommender.py`/
+  `QUALITY_RANK` в `on_demand_download.py`) очищены от 4K/HDR/DV/HEVC-бонусов.
+- Пригодны для LE-zal: h264/AVC/x264, 1080p/720p, WEB-DL/BDRip/Remux.
+  DTS-аудио: если приставка без ресивера — Kodi делает даунмикс (ок).
+
 ## Архитектура
 - **Точка входа**: `main.py:562` — `check_and_update_torrents` по расписанию
 - **Веб-сервер**: FastAPI на порту 6050, шаблон `templates/index.html`

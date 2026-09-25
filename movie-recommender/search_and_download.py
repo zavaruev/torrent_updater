@@ -456,10 +456,12 @@ def score_torrent(torrent: RutrackerTorrent, season: int = None) -> int:
     score = 0
 
     quality_rank = {
-        'WEB-DL 2160p': 105, 'WEB-DL 4K': 105, 'WEB-DL 4K HDR': 105, 'WEB-DL 4K DV': 105,
-        'WEB-DL 1080p': 100, 'WEB-DL 1080p HDR': 100, 'WEB-DL 1080p DV': 100,
-        'BDRip 1080p': 95, 'BDRip 1080p HDR': 95,
-        'Remux 1080p': 90, 'Remux 1080p HDR': 90,
+        # NB (сент. 2026): 2160p/4K/HDR/DV/HEVC/x265 убраны из рейтинга —
+        # LE-zal их не воспроизводит, такие раздачи отсекает EXCLUDE_KEYWORDS
+        # (rutracker_scraper.py) ещё до скоринга. Здесь — только совместимое.
+        'WEB-DL 1080p': 100,
+        'BDRip 1080p': 95,
+        'Remux 1080p': 90,
         'WEBRip 1080p': 85,
         'WEB-DL 720p': 75,
         'BDRip 720p': 65,
@@ -468,7 +470,7 @@ def score_torrent(torrent: RutrackerTorrent, season: int = None) -> int:
         'BDRip': 40,
         'Remux': 35,
         'WEBRip': 30,
-        'AVC': 20, 'HEVC': 20, 'x265': 20, 'x264': 20,
+        'AVC': 20, 'x264': 20,
         'TS': 10,
     }
     score += quality_rank.get(torrent.quality, 0)

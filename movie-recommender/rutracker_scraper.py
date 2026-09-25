@@ -52,14 +52,27 @@ EXCLUDE_KEYWORDS = [
     'DVDRip', 'HDRip', 'одноголос', 'закадров', 
     'One Voice', 'Single Voice', 'одноголосый',
     'Перевод: Одноголосый', 'Перевод: Закадровый',
-    'AMZN', 'iTunes', 'MOD', 'VHS', 'DVD5', 'DVD9'
+    'AMZN', 'iTunes', 'MOD', 'VHS', 'DVD5', 'DVD9',
+    # LE-zal (Kodi 21.3, 192.0.2.164) НЕ воспроизводит эти форматы —
+    # не скачивать раздачи с ними (требование пользователя, сент. 2026):
+    # HEVC/x265/H265 — кодек, 2160p/4K/UHD — разрешение, HDR/HDR10 и
+    # DV (Dolby Vision) — HDR-семейство цвета (без поддержки HDR даёт
+    # зелёно-фиолетовую картинку). Синонимы перечислены все, т.к. релизы
+    # подписаны по-разному ("HEVC", "x265", "H.265", "UHD-BD" и т.д.).
+    # _kw_start_re() матчит по началу слова: "Adventure"/"Advance" НЕ
+    # заденет 'DV' (lookbehind), а "HDRip" и так исключён выше.
+    'HEVC', 'x265', 'H265', 'H.265',
+    '2160p', '4K', 'UHD',
+    'HDR', 'DV',
 ]
 
 # Quality keywords (good quality for LE-Zal/Kodi)
+# NB: 2160p/4K/HDR/DV/HEVC/x265 СУЩЕСТВЕННО убраны — они в EXCLUDE_KEYWORDS
+# (LE-zal их не играет), здесь только то, что приставка точно воспроизводит.
 QUALITY_KEYWORDS = [
     'WEB-DL', 'WEBRip', 'BDRip', 'BluRay', 'Remux',
-    '1080p', '720p', '2160p', '4K', 'HDR', 'DV',
-    'HEVC', 'x265', 'x264', 'AVC'
+    '1080p', '720p',
+    'x264', 'AVC'
 ]
 
 

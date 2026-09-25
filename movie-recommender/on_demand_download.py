@@ -24,7 +24,7 @@ sys.path.insert(0, '/opt/data/scripts/movie-recommender')
 from dotenv import load_dotenv
 # load_dotenv('/mnt/media/docker-compose/torrent_updater/.env')  # load_dotenv() will find .env in working dir
 
-from rutracker_scraper import RutrackerScraper, RUTRACKER_MOVIES, RUTRACKER_TV
+from rutracker_scraper import RutrackerScraper, RUTRACKER_MOVIES, RUTRACKER_TV, _kw_start_re
 from transmission_add import TransmissionManager, MOVIES_DOWNLOAD_DIR, SERIES_DOWNLOAD_DIR
 
 # Setup logging
@@ -35,11 +35,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Quality ranking (higher = better)
+# NB (сент. 2026): 2160p/4K/HDR/DV убраны — LE-zal их не воспроизводит,
+# такие раздачи отсекает EXCLUDE_KEYWORDS (rutracker_scraper.py) до скоринга.
 QUALITY_RANK = {
-    'WEB-DL 2160p': 105, 'WEB-DL 4K': 105, 'WEB-DL 4K HDR': 105, 'WEB-DL 4K DV': 105,
-    'WEB-DL 1080p': 100, 'WEB-DL 1080p HDR': 100, 'WEB-DL 1080p DV': 100,
-    'BDRip 1080p': 95, 'BDRip 1080p HDR': 95,
-    'Remux 1080p': 90, 'Remux 1080p HDR': 90,
+    'WEB-DL 1080p': 100,
+    'BDRip 1080p': 95,
+    'Remux 1080p': 90,
     'WEBRip 1080p': 85,
     'WEB-DL 720p': 75,
     'BDRip 720p': 65,
@@ -48,7 +49,7 @@ QUALITY_RANK = {
     'BDRip': 40,
     'Remux': 35,
     'WEBRip': 30,
-    'AVC': 20, 'HEVC': 20, 'x265': 20, 'x264': 20,
+    'AVC': 20, 'x264': 20,
     'TS': 10,
 }
 
@@ -64,7 +65,12 @@ EXCLUDE_KEYWORDS = [
     'DVDRip', 'HDRip', 'одноголос', 'закадров', 
     'One Voice', 'Single Voice', 'одноголосый',
     'Перевод: Одноголосый', 'Перевод: Закадровый',
-    'AMZN', 'iTunes', 'MOD', 'VHS', 'DVD5', 'DVD9'
+    'AMZN', 'iTunes', 'MOD', 'VHS', 'DVD5', 'DVD9',
+    # LE-zal не воспроизводит: HEVC/x265, 2160p/4K/UHD, HDR, DV
+    # (см. EXCLUDE_KEYWORDS в rutracker_scraper.py — список синхронизировать!)
+    'HEVC', 'x265', 'H265', 'H.265',
+    '2160p', '4K', 'UHD',
+    'HDR', 'DV',
 ]
 
 MIN_SEEDERS = 5
@@ -147,10 +153,15 @@ def has_dubbing(title: str) -> tuple:
 
 
 def is_excluded(title: str) -> bool:
-    """Check if title has exclusion keywords."""
+    """Check if title has exclusion keywords.
+
+    Match by word start (same as rutracker_scraper._check_excluded), NOT by
+    plain substring: with substrings short keys like 'DV' or '4K' would hit
+    innocent titles ("Adventure", "1/4Kg") and 'TS' — any "...ts..." word.
+    """
     title_lower = title.lower()
     for ex in EXCLUDE_KEYWORDS:
-        if ex.lower() in title_lower:
+        if _kw_start_re(ex).search(title_lower):
             return True
     return False
 
