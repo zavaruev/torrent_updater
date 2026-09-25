@@ -35,10 +35,12 @@ Cloudflare показывает интерактивную проверку на
 + фильтр слов запроса), но ждёт прохождения проверки для E2E-теста.
 
 ## Jellyfin: идентификация медиа (сент. 2026)
-- **DNS**: в `docker-compose.yml` Jellyfin добавлен `dns: [192.0.2.1]` —
-  без этого `api.themoviedb.org` блокируется (DNS отдаёт 127.0.0.1, даже 8.8.8.8
-  хакнут), все онлайн-провайдеры падают с "Connection refused" и контент
-  не идентифицируется. DNS роутера (fake-ip туннеля) отдаёт рабочий адрес.
+- **DNS**: в `docker-compose.yml` Jellyfin добавлен `dns: [<HOME_DNS>]` (IP
+  роутера из `.env`) — без этого `api.themoviedb.org` блокируется (DNS отдаёт
+  127.0.0.1, даже 8.8.8.8 хакнут), все онлайн-провайдеры падают с
+  "Connection refused" и контент не идентифицируется. DNS роутера (fake-ip
+  туннеля) отдаёт рабочий адрес. В этом репозитории: `dns: ${HOME_DNS:?}`
+  берётся из `.env` — внутренние IP в git не хранятся.
 - **NFO для фильмов**: `post_process_downloads.py` создаёт NFO только при
   наличии лейбла `imdb_*` у торрента. Без NFO Jellyfin берёт встроенный Title-тег
   MKV (в релизах spartanec это мусор "Release by spartanec"). См. TODO(imdb-resolve)
@@ -55,8 +57,9 @@ Cloudflare показывает интерактивную проверку на
   Ключ в таблице `ApiKeys` (имя `hermes`) в `jellyfin.db`.
 
 ## Фильтр совместимости с оборудованием (LE-zal, сент. 2026)
-- **LE-zal = Kodi 21.3**, в HomeAssistant запись `kodi` → `192.0.2.164:8080`
-  (есть ещё LE-Kitchen/LE-spalnya/LE-vlada — не путать). Требование пользователя:
+- **LE-zal = Kodi 21.3**, в HomeAssistant запись `kodi` → `<LE_ZAL_IP>:8080`
+  (IP приставки хранится в `.env` как `LE_ZAL_HOST`, в git не коммитится;
+  есть ещё LE-Kitchen/LE-spalnya/LE-vlada — не путать). Требование пользователя:
   скачивать только раздачи, которые приставка проиграет без проблем.
 - **Исключено: HEVC/x265/H265/H.265, 2160p/4K/UHD, HDR/HDR10, DV (Dolby Vision).**
   Единственный источник — `EXCLUDE_KEYWORDS` в `movie-recommender/rutracker_scraper.py`;

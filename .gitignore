@@ -1,4 +1,10 @@
 .env
+# Файлы настроек (внутренние IP/пароли) — никогда не коммитятся
+.env.*
+!.env.example
+*.env
+config.env
+hosts.env
 .venv/
 __pycache__/
 *.pyc

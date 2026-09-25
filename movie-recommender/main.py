@@ -119,7 +119,7 @@ TR_HOST = os.getenv('TR_HOST')
 TR_PORT = int(os.getenv('TR_PORT', 9091))
 TR_USER = os.getenv('TR_USER')
 TR_PASSWORD = os.getenv('TR_PASSWORD')
-DOWNLOAD_DIR = os.getenv('DOWNLOAD_DIR', '/home/user/Downloads/')
+DOWNLOAD_DIR = os.getenv('DOWNLOAD_DIR', '/downloads/')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
@@ -264,7 +264,9 @@ async def search_and_download(request: Request):
         
         login_username = os.environ.get('LOGIN_RUTRACKER')
         login_password = os.environ.get('PASSWORD_RUTRACKER')
-        tr_host = os.environ.get('TR_HOST', '192.0.2.10')
+        # Адрес Transmission — только из .env (TR_HOST); localhost — фолбэк
+        # для network_mode: host (контейнер видит хостовый transmission).
+        tr_host = os.environ.get('TR_HOST', 'localhost')
         tr_port = int(os.environ.get('TR_PORT', 9091))
         tr_user = os.environ.get('TR_USER')
         tr_password = os.environ.get('TR_PASSWORD')

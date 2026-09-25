@@ -13,6 +13,10 @@ import os
 
 from jellyfin_sync import JellyfinSync
 
+# Адрес Jellyfin — из .env (JELLYFIN_URL); localhost-фолбэк корректен
+# при network_mode: host. Хардкод внутреннего IP запрещён (публичный репозиторий).
+JELLYFIN_URL = os.getenv('JELLYFIN_URL', 'http://localhost:8096')
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -47,7 +51,7 @@ def verify_jellyfin_identification(imdb_id: str, is_series: bool, season: int = 
             
             # Trigger library scan
             try:
-                resp = requests.post("http://192.0.2.10:8096/Library/Refresh", timeout=10)
+                resp = requests.post(f"{JELLYFIN_URL}/Library/Refresh", timeout=10)
                 logger.info(f"Jellyfin scan triggered: {resp.status_code}")
             except Exception as e:
                 logger.warning(f"Could not trigger Jellyfin scan: {e}")
@@ -118,7 +122,7 @@ def verify_jellyfin_identification(imdb_id: str, is_series: bool, season: int = 
 def check_library_refresh() -> bool:
     """Check if Jellyfin library scan is running."""
     try:
-        resp = requests.get("http://192.0.2.10:8096/System/Info", timeout=5)
+        resp = requests.get(f"{JELLYFIN_URL}/System/Info", timeout=5)
         return resp.status_code == 200
     except Exception:
         return False

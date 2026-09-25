@@ -33,7 +33,8 @@ MOVIES_DIR = Path(os.getenv('MOVIES_HOST_DIR', '/mnt/media/movies'))
 SERIES_DIR = Path(os.getenv('SERIES_HOST_DIR', '/mnt/media/series'))
 
 # Transmission config
-TRANSMISSION_HOST = os.getenv('TR_HOST', '192.0.2.10')
+# Адреса — только из .env; localhost работает и в контейнере (network_mode: host)
+TRANSMISSION_HOST = os.getenv('TR_HOST', 'localhost')
 TRANSMISSION_PORT = int(os.getenv('TR_PORT', '9091'))
 TRANSMISSION_USER = os.getenv('TR_USER', 'transmission')
 TRANSMISSION_PASSWORD = os.getenv('TR_PASSWORD', '')

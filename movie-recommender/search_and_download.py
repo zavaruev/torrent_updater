@@ -603,9 +603,14 @@ def _verify_jellyfin_cli(imdb_id: str, is_series: bool, season: int = None, titl
         jellyfin.connect()
 
         # Trigger library scan
+        # TODO(jellyfin): адрес Jellyfin берётся из .env (JELLYFIN_URL),
+        # localhost-фолбэк корректен при network_mode: host.
         import requests
         try:
-            resp = requests.post("http://192.0.2.10:8096/Library/Refresh", timeout=10)
+            resp = requests.post(
+                f"{os.getenv('JELLYFIN_URL', 'http://localhost:8096')}/Library/Refresh",
+                timeout=10,
+            )
             logger.info(f"Jellyfin scan triggered: {resp.status_code}")
         except Exception as e:
             logger.warning(f"Could not trigger Jellyfin scan: {e}")

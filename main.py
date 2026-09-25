@@ -157,7 +157,7 @@ TR_HOST = os.getenv('TR_HOST')
 TR_PORT = int(os.getenv('TR_PORT', 9091))
 TR_USER = os.getenv('TR_USER')
 TR_PASSWORD = os.getenv('TR_PASSWORD')
-DOWNLOAD_DIR = os.getenv('DOWNLOAD_DIR', '/home/user/Downloads/')
+DOWNLOAD_DIR = os.getenv('DOWNLOAD_DIR', '/downloads/')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 

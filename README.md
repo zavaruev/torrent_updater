@@ -24,6 +24,10 @@ python main.py          # требуется .env в каталоге
 
 ## Конфигурация (`.env`)
 
+Шаблон: скопируйте `.env.example` в `.env` и заполните своими значениями.
+Файл `.env` (все адреса/пароли, включая внутренние IP) находится в
+`.gitignore` и в репозиторий не попадает.
+
 Обязательные переменные:
 
 | Переменная | Описание |
@@ -32,11 +36,14 @@ python main.py          # требуется .env в каталоге
 | `TR_HOST`, `TR_PORT` | адрес и порт Transmission RPC |
 | `TR_USER`, `TR_PASSWORD` | доступ к Transmission |
 | `DOWNLOAD_DIR` | каталог загрузок |
+| `HOME_DNS` | IP DNS-роутера, используется в `docker-compose.yml` (`dns: ${HOME_DNS}`) |
+| `JELLYFIN_URL` | адрес Jellyfin (для триггера скана библиотеки) |
 
 Опциональные:
 
 | Переменная | Описание |
 |---|---|
+| `LE_ZAL_HOST` | адрес приставки LE-zal (справочно, см. AGENTS.md) |
 | `RUTRACKER_BB_SESSION`, `RUTRACKER_BB_DATA` | куки браузера для входа вместо форм (обход капчи) |
 | `CHECK_INTERVAL`, `CHECK_INTERVAL_UNIT` | период проверки (`minutes`/`hours`/`days`), по умолчанию 1 час |
 | `RUN_ON_STARTUP` | запуск проверки сразу при старте |
