@@ -402,18 +402,18 @@ def send_telegram_notification(
         status_text = custom_message
     elif success:
         status_emoji = "\u2705"
-        status_text = "\u0423\u0441\u043f\u0435\u0448\u043d\u043e \u043e\u0431\u043d\u043e\u0432\u043b\u0451\u043d"
+        status_text = "Updated successfully"
     else:
         status_emoji = "\u274c"
-        status_text = "\u041e\u0448\u0438\u0431\u043a\u0430 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f"
+        status_text = "Update failed"
     
     # Always log to console
     log_message = f"""
 {'=' * 50}
 {status_emoji} {status_text}
-\U0001f4e5 \u0422\u043e\u0440\u0440\u0435\u043d\u0442: {torrent_name}
-\U0001f4c5 \u041b\u043e\u043a\u0430\u043b\u044c\u043d\u0430\u044f \u0434\u0430\u0442\u0430: {local_date}
-\U0001f4c5 \u0414\u0430\u0442\u0430 \u043d\u0430 \u0442\u0440\u0435\u043a\u0435\u0440\u0435: {tracker_date}
+\U0001f4e5 Torrent: {torrent_name}
+\U0001f4c5 Local date: {local_date}
+\U0001f4c5 Tracker date: {tracker_date}
 \U0001f517 URL: {torrent_url}
 {'=' * 50}"""
     logger.info(log_message)
@@ -425,14 +425,14 @@ def send_telegram_notification(
     message = f"""
 {status_emoji} <b>{status_text}</b>
 
-\U0001f4e5 <b>\u0422\u043e\u0440\u0440\u0435\u043d\u0442:</b>
+\U0001f4e5 <b>Torrent:</b>
 <code>{torrent_name}</code>
 
-\U0001f4c5 <b>\u0414\u0430\u0442\u044b:</b>
-• \u041b\u043e\u043a\u0430\u043b\u044c\u043d\u0430\u044f: <code>{local_date}</code>
-• \u0422\u0440\u0435\u043a\u0435\u0440: <code>{tracker_date}</code>
+\U0001f4c5 <b>Dates:</b>
+• Local: <code>{local_date}</code>
+• Tracker: <code>{tracker_date}</code>
 
-\U0001f517 <a href="{torrent_url}">\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043d\u0430 \u0442\u0440\u0435\u043a\u0435\u0440\u0435</a>
+\U0001f517 <a href="{torrent_url}">Open on tracker</a>
 """
     
     # TODO: uncomment once Telegram is configured
@@ -1210,7 +1210,7 @@ def is_torrent_updated(url: str, torrent_date: datetime.datetime, session: WebDr
     """Checks if the torrent on the tracker is newer than the local one. Retries on failure.
     Returns: (is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete)
     """
-    last_error = 'Неизвестная ошибка'
+    last_error = 'Unknown error'
     for attempt in range(1, max_retries + 1):
         result = _try_check_torrent(url, torrent_date, session, sb)
         is_updated, local_date_str, tracker_date_str, error_msg, is_season_complete = result
@@ -1248,7 +1248,7 @@ def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDr
                 time.sleep(1)
                 page_source = driver.page_source
             except Exception:
-                return (False, "", "", f"Не удалось загрузить страницу: {exc}", False)
+                return (False, "", "", f"Failed to load page: {exc}", False)
         soup = BeautifulSoup(page_source, 'lxml')
         title_text = soup.find('title')
         title_text = title_text.get_text(strip=True) if title_text else '?'
@@ -1256,7 +1256,7 @@ def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDr
         # Quick check: are we still on the page and logged in?
         if 'login.php' in driver.current_url:
             logger.error(f"Session expired for {url}")
-            return (False, "", "", "Сессия истекла", False)
+            return (False, "", "", "Session expired", False)
 
         # If Cloudflare blocked the page
         if '521' in title_text or '520' in title_text or '503' in title_text or '522' in title_text:
@@ -1306,8 +1306,8 @@ def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDr
 
         if not date_str:
             snippet = soup.get_text()[:200].replace('\n', ' ').strip()
-            logger.warning(f"Дата не найдена | title: '{title_text}' | {url} | snippet: {snippet[:150]}")
-            return (False, "", "", f"Дата не найдена | {title_text[:40]}", season_complete)
+            logger.warning(f"Date not found | title: '{title_text}' | {url} | snippet: {snippet[:150]}")
+            return (False, "", "", f"Date not found | {title_text[:40]}", season_complete)
 
         date_str = date_str.replace(')', '').replace('(', '').strip()
         if 'ред' in date_str:
@@ -1319,7 +1319,7 @@ def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDr
         
         if not tracker_date_obj:
             logger.warning(f"Could not parse date string: '{date_str}'")
-            return (False, "", "", f"Не удалось разобрать дату: {date_str[:30]}", season_complete)
+            return (False, "", "", f"Failed to parse date: {date_str[:30]}", season_complete)
 
         local_date_str = torrent_date.date().strftime('%Y-%m-%d')
         tracker_date_str = tracker_date_obj.date().strftime('%Y-%m-%d')
@@ -1331,7 +1331,7 @@ def _try_check_torrent(url: str, torrent_date: datetime.datetime, session: WebDr
 
     except Exception as e:
         logger.error(f"Error checking update for {url}: {e}")
-        return (False, "", "", f"Исключение: {str(e)[:60]}", False)
+        return (False, "", "", f"Exception: {str(e)[:60]}", False)
 
 def download_and_add_torrent(url: str, session: WebDriver, to_dir: str, tr: Client, max_retries: int = 3) -> bool:
     """Downloads the torrent file using the authenticated Chrome driver and adds it to Transmission."""
@@ -1618,14 +1618,14 @@ def check_and_update_torrents():
                     try:
                         tr.remove_torrent(torrent.id)
                         status_manager.record_torrent_check(torrent.name, local_date_str, tracker_date_str, 'season_complete',
-                            error_msg='Сезон завершён, удалён из Transmission', torrent_url=torrent_url)
+                            error_msg='Season completed, removed from Transmission', torrent_url=torrent_url)
                         send_telegram_notification(
                             torrent_name=torrent.name,
                             torrent_url=torrent_url,
                             local_date=local_date_str,
                             tracker_date=tracker_date_str,
                             success=True,
-                            custom_message='\U0001f3c1 Сезон завершён, сериал скачан полностью'
+                            custom_message='\U0001f3c1 Season completed, the series has been fully downloaded'
                         )
                     except Exception as e:
                         logger.error(f"Failed to remove completed season {torrent.name}: {e}")

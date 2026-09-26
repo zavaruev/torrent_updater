@@ -181,7 +181,7 @@ class MovieRecommender:
             ]
 
             if results['movies_added'] > 0:
-                msg_lines.append(f"🎥 <b>Фильмы добавлено:</b> {results['movies_added']}")
+                msg_lines.append(f"🎥 <b>Movies added:</b> {results['movies_added']}")
                 for rec in results['movie_recommendations'][:results['movies_added']]:
                     size = f"{rec['size_gb']}GB" if rec.get('size_gb') else ""
                     imdb = f"IMDb {rec['imdb_rating']}" if rec.get('imdb_rating') else ""
@@ -191,10 +191,10 @@ class MovieRecommender:
                 msg_lines.append("")
 
             if results['movies_found'] > results['movies_added']:
-                msg_lines.append(f"📋 <b>Фильмы в рекомендациях:</b> {results['movies_found'] - results['movies_added']} шт.")
+                msg_lines.append(f"📋 <b>Movies in recommendations:</b> {results['movies_found'] - results['movies_added']} total")
 
             if results['series_added'] > 0:
-                msg_lines.append(f"📺 <b>Сериалы добавлено:</b> {results['series_added']}")
+                msg_lines.append(f"📺 <b>Series added:</b> {results['series_added']}")
                 for rec in results['series_recommendations'][:results['series_added']]:
                     imdb = f"IMDb {rec['imdb_rating']}" if rec.get('imdb_rating') else ""
                     seeders = f"{rec['seeders']}s" if rec.get('seeders') else ""
@@ -204,10 +204,10 @@ class MovieRecommender:
                 msg_lines.append("")
 
             if results['series_found'] > results['series_added']:
-                msg_lines.append(f"📋 <b>Сериалы в рекомендациях:</b> {results['series_found'] - results['series_added']} шт.")
+                msg_lines.append(f"📋 <b>Series in recommendations:</b> {results['series_found'] - results['series_added']} total")
 
             if results['errors']:
-                msg_lines.append(f"⚠️ <b>Ошибки:</b> {len(results['errors'])}")
+                msg_lines.append(f"⚠️ <b>Errors:</b> {len(results['errors'])}")
                 for err in results['errors'][:3]:
                     msg_lines.append(f"  • {err[:100]}")
 

@@ -1,104 +1,107 @@
 # AGENTS.md
 
-## Быстрый старт
-- **Локально**: `python main.py` (требуется `.env`)
+## Quick start
+- **Local**: `python main.py` (requires `.env`)
 - **Docker**: `docker-compose up -d --build`
-- **Веб-интерфейс**: http://localhost:6050
+- **Web UI**: http://localhost:6050
 
-## ⚠️ Репозиторий ПУБЛИЧНЫЙ (с сент. 2026)
-- **Все IP/адреса и пароли — только в `.env`** (`.env` и любые `*.env`,
-  `config.env`, `hosts.env` — в `.gitignore`; шаблон `.env.example` коммитится).
-- **Запрещено хардкодить**: приватные IP, пароли, username в коде, compose
-  или доках. `docker-compose.yml` берёт DNS из `${HOME_DNS:?}` (`.env`).
-- Перед пушем проверка: `git grep -E "192\.168\.|10\.[0-9]+\." -- .` пусто.
-- ВНИМАНИЕ: пароль Transmission однажды попал в историю коммитов — история
-  переписана `git filter-repo` (сент. 2026), старый пароль считать
-  скомпрометированным и не возвращать в код.
+## ⚠️ Repository is PUBLIC (since Sep 2026)
+- **All IPs/addresses and passwords live only in `.env`** (`.env` and any `*.env`,
+  `config.env`, `hosts.env` are in `.gitignore`; the `.env.example` template is committed).
+- **Hardcoding is forbidden**: private IPs, passwords, usernames in code, compose
+  files or docs. `docker-compose.yml` takes DNS from `${HOME_DNS:?}` (`.env`).
+- Pre-push check: `git grep -E "192\.168\.|10\.[0-9]+\." -- .` must be empty.
+- WARNING: the Transmission password once leaked into commit history — the history
+  was rewritten with `git filter-repo` (Sep 2026); treat the old password as
+  compromised and never put it back into the code.
 
-## Обязательные переменные (`.env`)
+## Required variables (`.env`)
 ```
-LOGIN_RUTRACKER=<логин>
-PASSWORD_RUTRACKER=<пароль>
-TR_HOST=<хост transmission>
+LOGIN_RUTRACKER=<login>
+PASSWORD_RUTRACKER=<password>
+TR_HOST=<transmission host>
 TR_PORT=9091
-TR_USER=<пользователь transmission>
-TR_PASSWORD=<пароль transmission>
-DOWNLOAD_DIR=/путь/к/загрузкам
+TR_USER=<transmission user>
+TR_PASSWORD=<transmission password>
+DOWNLOAD_DIR=/path/to/downloads
 ```
 
-## Опционально: вход по кукам (обход капчи)
-Если Rutracker требует капчу на форме входа, скопируй куки из своего браузера
+## Optional: cookie login (captcha bypass)
+If Rutracker requires a captcha on the login form, copy cookies from your browser
 (F12 → Application → Cookies → `https://rutracker.org`: `bb_session`, `bb_data`):
 ```
-RUTRACKER_BB_SESSION=<значение bb_session>
-RUTRACKER_BB_DATA=<значение bb_data>
+RUTRACKER_BB_SESSION=<bb_session value>
+RUTRACKER_BB_DATA=<bb_data value>
 ```
-После добавления — `docker compose up -d`. Вход по кукам пробуется первым,
-форма логина — запасной вариант.
+After adding them — `docker compose up -d`. Cookie login is tried first, the login
+form is the fallback.
 
-## Известное ограничение (сент. 2026)
-Cloudflare показывает интерактивную проверку на страницах раздач/трекера для
-автоматизированного Chrome (датацентр-IP + флаги автоматизации): клик по
-чекбоксу серверно отклоняется. Проверки дат/поиск/скачивание на этих страницах
-сейчас упираются в неё; индекс, статусы, история, рекомендации — работают.
-Поиск по запросу (`tracker.php?nm=`) реализован (`RutrackerScraper.search_tracker`
-+ фильтр слов запроса), но ждёт прохождения проверки для E2E-теста.
+## Known limitation (Sep 2026)
+Cloudflare shows an interactive check on torrent/tracker pages for automated
+Chrome (datacenter IP + automation flags): the checkbox click is rejected server-side.
+Date checks/search/download on these pages currently run into it; the index,
+statuses, history and recommendations work. Search by query (`tracker.php?nm=`) is
+implemented (`RutrackerScraper.search_tracker` + query-word filter) but awaits
+passing the check for an E2E test.
 
-## Jellyfin: идентификация медиа (сент. 2026)
-- **DNS**: в `docker-compose.yml` Jellyfin добавлен `dns: [<HOME_DNS>]` (IP
-  роутера из `.env`) — без этого `api.themoviedb.org` блокируется (DNS отдаёт
-  127.0.0.1, даже 8.8.8.8 хакнут), все онлайн-провайдеры падают с
-  "Connection refused" и контент не идентифицируется. DNS роутера (fake-ip
-  туннеля) отдаёт рабочий адрес. В этом репозитории: `dns: ${HOME_DNS:?}`
-  берётся из `.env` — внутренние IP в git не хранятся.
-- **NFO для фильмов**: `post_process_downloads.py` создаёт NFO только при
-  наличии лейбла `imdb_*` у торрента. Без NFO Jellyfin берёт встроенный Title-тег
-  MKV (в релизах spartanec это мусор "Release by spartanec"). См. TODO(imdb-resolve)
-  в `main.py` — резолв imdb_id при ручном поиске.
-- **Корректный imdbid**: The Simpsons Movie (2007) = `tt0462538`
-  (НЕ tt0449088 — это Пираты Карибского моря). Проверять через
-  `https://v2.sg.media-imdb.com/suggestion/<буква>/<title>.json`.
-- **ОПАСНО: `DELETE /Items/{id}?deleteFile=false` в Jellyfin удаляет файлы!**
-  Параметр не сработал (июль-версия API), в логе "Deleting item path ... .mkv" —
-  файл 25 ГБ и NFO удалились, пришлось перекачивать. Никогда не удалять элементы
-  библиотеки через API — только переидентифицировать (Refresh) или править NFO.
+## Jellyfin: media identification (Sep 2026)
+- **DNS**: in `docker-compose.yml` Jellyfin has `dns: [<HOME_DNS>]` (the router IP
+  from `.env`) — without it `api.themoviedb.org` is blocked (DNS returns
+  127.0.0.1, even 8.8.8.8 is hijacked), all online providers fail with
+  "Connection refused" and content is not identified. The router DNS (fake-ip
+  tunnel) returns a working address. In this repository: `dns: ${HOME_DNS:?}`
+  comes from `.env` — internal IPs are never stored in git.
+- **NFO for movies**: `post_process_downloads.py` creates an NFO only when the
+  torrent has an `imdb_*` label. Without an NFO Jellyfin uses the built-in MKV
+  Title tag (in spartanec releases it is garbage: "Release by spartanec"). See
+  TODO(imdb-resolve) in `main.py` — imdb_id resolution for manual search.
+- **Correct imdbid**: The Simpsons Movie (2007) = `tt0462538`
+  (NOT tt0449088 — that is Pirates of the Caribbean). Check via
+  `https://v2.sg.media-imdb.com/suggestion/<letter>/<title>.json`.
+- **DANGER: `DELETE /Items/{id}?deleteFile=false` in Jellyfin deletes files!**
+  The parameter did not work (July API version), the log showed "Deleting item
+  path ... .mkv" — a 25 GB file and the NFO were deleted and had to be
+  re-downloaded. Never delete library items via the API — only re-identify
+  (Refresh) or edit the NFO.
 - **Refresh API**: `POST /Items/{id}/Refresh?MetadataRefreshMode=2&ImageRefreshMode=2`
-  (enum только числом: 2=Full/DownloadAll), auth: `Authorization: MediaBrowser Token=<key>`.
-  Ключ в таблице `ApiKeys` (имя `hermes`) в `jellyfin.db`.
+  (the enum takes a number only: 2=Full/DownloadAll), auth:
+  `Authorization: MediaBrowser Token=<key>`. The key is in the `ApiKeys` table
+  (name `hermes`) in `jellyfin.db`.
 
-## Фильтр совместимости с оборудованием (LE-zal, сент. 2026)
-- **LE-zal = Kodi 21.3**, в HomeAssistant запись `kodi` → `<LE_ZAL_IP>:8080`
-  (IP приставки хранится в `.env` как `LE_ZAL_HOST`, в git не коммитится;
-  есть ещё LE-Kitchen/LE-spalnya/LE-vlada — не путать). Требование пользователя:
-  скачивать только раздачи, которые приставка проиграет без проблем.
-- **Исключено: HEVC/x265/H265/H.265, 2160p/4K/UHD, HDR/HDR10, DV (Dolby Vision).**
-  Единственный источник — `EXCLUDE_KEYWORDS` в `movie-recommender/rutracker_scraper.py`;
-  `on_demand_download.py` импортирует его (локальной копии больше нет).
-- Матчинг — общий вход `is_excluded_title()`: по началу слова (`_kw_start_re`,
-  lookbehind) для основного списка + целое слово (`_whole_word_re`) для коротких
-  ключей `EXCLUDE_WHOLE_WORDS` (`TS`, `TC`, `MOD`, `Scr`) — иначе `'MOD'` заденет
-  "Modern Family", `'Scr'` — "Scrubs", `'TS'` — "Tsunami". Подстрочный матчинг
-  не использовать: `'DV'` поймал бы "Adventure".
-- Таблицы скоринга (`quality_rank` в `search_and_download.py`/`recommender.py`/
-  `QUALITY_RANK` в `on_demand_download.py`) очищены от 4K/HDR/DV/HEVC-бонусов.
-- Пригодны для LE-zal: h264/AVC/x264, 1080p/720p, WEB-DL/BDRip/Remux.
-  DTS-аудио: если приставка без ресивера — Kodi делает даунмикс (ок).
+## Hardware compatibility filter (LE-zal, Sep 2026)
+- **LE-zal = Kodi 21.3**, in HomeAssistant the `kodi` entry → `<LE_ZAL_IP>:8080`
+  (the box IP is stored in `.env` as `LE_ZAL_HOST`, never committed; there are
+  also LE-Kitchen/LE-spalnya/LE-vlada — do not mix them up). User requirement:
+  download only releases the box plays without problems.
+- **Excluded: HEVC/x265/H265/H.265, 2160p/4K/UHD, HDR/HDR10, DV (Dolby Vision).**
+  The only source is `EXCLUDE_KEYWORDS` in `movie-recommender/rutracker_scraper.py`;
+  `on_demand_download.py` imports it (no local copy anymore).
+- Matching — shared entry `is_excluded_title()`: word-start matching (`_kw_start_re`,
+  lookbehind) for the main list + whole-word matching (`_whole_word_re`) for the
+  short keys `EXCLUDE_WHOLE_WORDS` (`TS`, `TC`, `MOD`, `Scr`) — otherwise `'MOD'`
+  hits "Modern Family", `'Scr'` — "Scrubs", `'TS'` — "Tsunami". Do not use
+  substring matching: `'DV'` would catch "Adventure".
+- Scoring tables (`quality_rank` in `search_and_download.py`/`recommender.py`,
+  `QUALITY_RANK` in `on_demand_download.py`) have been cleared of 4K/HDR/DV/HEVC
+  bonuses.
+- Suitable for LE-zal: h264/AVC/x264, 1080p/720p, WEB-DL/BDRip/Remux.
+  DTS audio: if the box has no receiver — Kodi downmixes (OK).
 
-## Архитектура
-- **Точка входа**: `main.py:562` — `check_and_update_torrents` по расписанию
-- **Веб-сервер**: FastAPI на порту 6050, шаблон `templates/index.html`
-- **Chrome**: headless undetected-chromedriver для логина и парсинга Rutracker
-- **Transmission RPC**: клиент `transmission-rpc` для управления торрентами
+## Architecture
+- **Entry point**: `main.py` — `check_and_update_torrents()` runs on schedule
+- **Web server**: FastAPI on port 6050, template `templates/index.html`
+- **Chrome**: headless undetected-chromedriver for login and Rutracker parsing
+- **Transmission RPC**: `transmission-rpc` client for torrent management
 
-## Ключевые особенности
-- Проверка обновлений с интервалом `CHECK_INTERVAL` (`hours`/`minutes`/`days`)
-- Обнаружение завершённых сезонов (`Серии: 1-X из X`) — автоудаление из Transmission
-- Новый торрент скачивается до удаления старого (отказоустойчивость)
-- Последние 100 логов в буфере для веб-интерфейса
+## Key features
+- Update checks every `CHECK_INTERVAL` (`hours`/`minutes`/`days`)
+- Completed-season detection (marker `Серии: 1-X из X`) — auto-removal from Transmission
+- The new torrent is downloaded before the old one is removed (fault tolerance)
+- The last 100 log entries are buffered for the web UI
 
-## Важно
-- Chrome устанавливается в Docker (Dockerfile строки 9-19)
-- `page_load_timeout(60)` — предотвращает зависание на 120+ секунд при Cloudflare-челлендже (`main.py:257`)
-- Навигация через `execute_script("window.location.href=...")` в `_try_check_torrent` и `download_and_add_torrent` — избегает блокировки page_load_timeout
-- После клика Login: `driver.get("index.php")` обёрнут в `try/except Exception` с `window.stop()` — Cloudflare может задерживать рендер даже после успешного логина, таймаут renderer'а не мешает продолжить
-- Telegram-уведомления закомментированы (требуются `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID`)
+## Important
+- Chrome is installed in Docker (Dockerfile lines 9-19)
+- `set_page_load_timeout(120)` — bounds each page load so a Cloudflare challenge cannot stall the driver indefinitely (set in `create_uc_driver` and `_try_login`)
+- Navigation via `execute_script("window.location.href=...")` in `_try_check_torrent` and `download_and_add_torrent` — avoids page_load_timeout blocking
+- After clicking Login: `driver.get("index.php")` is wrapped in `try/except Exception` with `window.stop()` — Cloudflare may delay rendering even after a successful login; the renderer timeout does not block continuing
+- Telegram notifications are commented out (require `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`)
