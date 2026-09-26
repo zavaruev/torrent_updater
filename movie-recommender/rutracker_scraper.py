@@ -690,32 +690,50 @@ class RutrackerScraper:
         for page in range(max_pages):
             url = f"{forum_url}&start={page * 50}" if page > 0 else forum_url
             logger.info(f"  Page {page + 1}: {url}")
-            
-            try:
-                # Navigate via JS like main.py does
-                driver.execute_script("window.location.href = arguments[0]", url)
-                time.sleep(8)  # human pace; bursts trigger CF challenges
-                
-                # Try to solve captcha if present
+
+            page_torrents = []
+            # Up to 3 attempts per page: viewforum sits behind the interactive
+            # Cloudflare wall (verified Sep 2026 — a single 8s pass parses 0
+            # rows, waiting alone never clears it). Wait out a managed
+            # challenge first, then fall back to the CDP solve.
+            for attempt in range(1, 4):
                 try:
-                    self.sb.solve_captcha()
+                    # Navigate via JS like main.py does
+                    driver.execute_script("window.location.href = arguments[0]", url)
+                    time.sleep(8)  # human pace; bursts trigger CF challenges
+                except Exception as e:
+                    logger.warning(f"  Page {page + 1} nav issue: {e}")
+
+                # Wait out a possible CF challenge (managed sometimes auto-clears).
+                src = ''
+                deadline = time.time() + 30
+                while time.time() < deadline:
+                    try:
+                        src = driver.page_source
+                    except Exception:
+                        time.sleep(3)
+                        continue
+                    low = src.lower()
+                    if 'just a moment' not in low and 'challenge-platform' not in low:
+                        break
                     time.sleep(3)
-                except:
-                    pass
-                
-                page_source = driver.page_source
-                page_torrents = self._parse_forum_page(page_source, forum_id)
-                if not page_torrents:
-                    logger.info("  No more torrents found, stopping")
+
+                page_torrents = self._parse_forum_page(src, forum_id)
+                if page_torrents:
                     break
-                
-                torrents.extend(page_torrents)
-                logger.info(f"  Found {len(page_torrents)} torrents on page {page + 1}")
-                
-            except Exception as e:
-                logger.error(f"Error scraping page {page + 1}: {e}")
+                logger.info(f"  Forum {forum_id} p{page + 1} attempt {attempt}: "
+                            f"empty, {'CDP-solving' if attempt < 3 else 'giving up'}")
+                if attempt < 3:
+                    self._cdp_solve_page(url)
+                    time.sleep(5)
+
+            if not page_torrents:
+                logger.info("  No more torrents found, stopping")
                 break
-        
+
+            torrents.extend(page_torrents)
+            logger.info(f"  Found {len(page_torrents)} torrents on page {page + 1}")
+
         return torrents
 
     def _parse_forum_page(self, page_source: str, forum_id: int) -> List[RutrackerTorrent]:
@@ -750,7 +768,17 @@ class RutrackerScraper:
         
         # Cell 1: title
         title_cell = cells[1]
-        title_link = title_cell.find('a', href=re.compile(r'viewtopic\.php\?t=\d+'))
+        # The title cell may open with an icon-only viewtopic link ("newest
+        # reply": viewtopic.php?t=N&view=newest, empty text) and contains
+        # pagination links (t=N&start=NN). Pick the link with the exact
+        # href viewtopic.php?t=<id> — only that one carries the title text;
+        # fall back to the first viewtopic link.
+        viewtopic_links = title_cell.find_all('a', href=re.compile(r'viewtopic\.php\?t=\d+'))
+        title_link = next(
+            (a for a in viewtopic_links
+             if re.fullmatch(r'.*viewtopic\.php\?t=\d+', a.get('href') or '')),
+            None
+        ) or (viewtopic_links[0] if viewtopic_links else None)
         if not title_link:
             return None
         

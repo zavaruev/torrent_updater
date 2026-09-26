@@ -291,32 +291,53 @@ class MovieRecommender:
 
         # Group torrents by IMDB match
         matches = {}  # imdb_id -> list of torrents
+        # Per-gate counters: make "why 0 recommendations" answerable from logs.
+        stats = {'total': 0, 'excluded': 0, 'no_dub': 0, 'too_big': 0,
+                 'low_seeders': 0, 'no_quality': 0, 'passed': 0,
+                 'imdb_matched': 0, 'watched_owned': 0}
+        passed_samples = []
         for torrent in rutracker_torrents:
+            stats['total'] += 1
             # Skip excluded, no dubbing, too large, too few seeders
             if torrent.is_excluded:
+                stats['excluded'] += 1
                 continue
             if not torrent.has_dubbing:
+                stats['no_dub'] += 1
                 continue
             if torrent.size_bytes > MOVIE_MAX_SIZE_GB * 1024**3:
+                stats['too_big'] += 1
                 continue
             if torrent.seeders < MIN_SEEDERS:
+                stats['low_seeders'] += 1
                 continue
             if not torrent.quality:
+                stats['no_quality'] += 1
                 continue
+
+            stats['passed'] += 1
+            if len(passed_samples) < 3:
+                passed_samples.append(torrent.title[:60])
 
             # Try to match with IMDB
             norm_title = self._normalize_title(torrent.title)
             imdb_item = self._find_imdb_match(norm_title, imdb_movies)
 
             if imdb_item:
+                stats['imdb_matched'] += 1
                 # Check if already watched or in library
                 if self.jellyfin.is_movie_watched_or_owned(imdb_item.title, imdb_item.year):
+                    stats['watched_owned'] += 1
                     logger.debug(f"Skipping already watched/owned: {imdb_item.title}")
                     continue
-                
+
                 if imdb_item.imdb_id not in matches:
                     matches[imdb_item.imdb_id] = []
                 matches[imdb_item.imdb_id].append((imdb_item, torrent))
+
+        logger.info(f"Movie filter gates: {stats}")
+        if passed_samples:
+            logger.info("Movies passing gates (sample): " + " | ".join(passed_samples))
 
         # For each IMDB match, pick the best torrent
         recommendations = []
