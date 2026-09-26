@@ -91,10 +91,11 @@ The exclusion list is `EXCLUDE_KEYWORDS` in `movie-recommender/rutracker_scraper
 ## Known limitations
 
 - **Cloudflare**: on torrent/tracker pages automated Chrome gets an interactive
-  challenge that the server rejects. Index, statuses, history and recommendations
-  work; the end-to-end search path awaits a solution (see `AGENTS.md`). Do not
-  force these checks: bursts of requests raise Cloudflare's strictness — keep one
-  session browser with 20–30 second pauses between navigations.
+  challenge that the server rejects. All scraper paths (forum scraping, tracker
+  search, date checks) clear it via wait-out + CDP solve, verified E2E
+  (Sep 26, 2026 — see `AGENTS.md` for details). Do not force these checks:
+  bursts of requests raise Cloudflare's strictness — keep one session browser
+  with 20–30 second pauses between navigations.
 - **Telegram notifications** are commented out in the code.
 
 ## Jellyfin

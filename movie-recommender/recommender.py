@@ -119,15 +119,19 @@ class MovieRecommender:
                 movie_torrents = scraper.scrape_forum(RUTRACKER_MOVIES, 252, max_pages=3)
                 tv_torrents = scraper.scrape_forum(RUTRACKER_TV, 1803, max_pages=3)
 
+                # Snapshot of Transmission: recommendations must not re-offer
+                # anything that is already downloading there.
+                tx_names = self._get_transmission_names()
+
                 # 4. Match and filter movies
                 logger.info("Matching movies...")
-                movie_recs = self._match_and_filter_movies(imdb_data, movie_torrents)
+                movie_recs = self._match_and_filter_movies(imdb_data, movie_torrents, tx_names)
                 results['movies_found'] = len(movie_recs)
                 self.movie_recommendations = movie_recs
 
                 # 5. Match and filter series
                 logger.info("Matching series...")
-                series_recs = self._match_and_filter_series(imdb_data, tv_torrents)
+                series_recs = self._match_and_filter_series(imdb_data, tv_torrents, tx_names)
                 results['series_found'] = len(series_recs)
                 self.series_recommendations = series_recs
 
@@ -276,8 +280,10 @@ class MovieRecommender:
         
         return score
 
-    def _match_and_filter_movies(self, imdb_data: Dict, rutracker_torrents: List[RutrackerTorrent]) -> List[MovieRecommendation]:
+    def _match_and_filter_movies(self, imdb_data: Dict, rutracker_torrents: List[RutrackerTorrent],
+                                 tx_names: Optional[List[str]] = None) -> List[MovieRecommendation]:
         """Match IMDB movies with Rutracker torrents and filter."""
+        tx_names = tx_names or []
         # Build IMDB movie lookup (by normalized title)
         imdb_movies = {}
         for chart_name, items in imdb_data.items():
@@ -294,7 +300,7 @@ class MovieRecommender:
         # Per-gate counters: make "why 0 recommendations" answerable from logs.
         stats = {'total': 0, 'excluded': 0, 'no_dub': 0, 'too_big': 0,
                  'low_seeders': 0, 'no_quality': 0, 'passed': 0,
-                 'imdb_matched': 0, 'watched_owned': 0}
+                 'imdb_matched': 0, 'watched_owned': 0, 'in_transmission': 0}
         passed_samples = []
         for torrent in rutracker_torrents:
             stats['total'] += 1
@@ -329,6 +335,12 @@ class MovieRecommender:
                 if self.jellyfin.is_movie_watched_or_owned(imdb_item.title, imdb_item.year):
                     stats['watched_owned'] += 1
                     logger.debug(f"Skipping already watched/owned: {imdb_item.title}")
+                    continue
+
+                # Skip when the movie is already downloading in Transmission
+                if self._in_transmission(tx_names, imdb_item.title):
+                    stats['in_transmission'] += 1
+                    logger.debug(f"Skipping already in Transmission: {imdb_item.title}")
                     continue
 
                 if imdb_item.imdb_id not in matches:
@@ -367,8 +379,10 @@ class MovieRecommender:
         logger.info(f"Movie recommendations after filtering: {len(recommendations)}")
         return recommendations
 
-    def _match_and_filter_series(self, imdb_data: Dict, rutracker_torrents: List[RutrackerTorrent]) -> List[SeriesRecommendation]:
+    def _match_and_filter_series(self, imdb_data: Dict, rutracker_torrents: List[RutrackerTorrent],
+                                 tx_names: Optional[List[str]] = None) -> List[SeriesRecommendation]:
         """Match IMDB TV shows with Rutracker torrents and filter."""
+        tx_names = tx_names or []
         recommendations = []
 
         # Build IMDB TV lookup
@@ -388,57 +402,88 @@ class MovieRecommender:
 
         # Group torrents by IMDB match + season
         matches = {}  # (imdb_id, season) -> list of (imdb_item, torrent, reason)
+        # Per-gate counters (same idea as the movie ones): every skip reason
+        # is visible in the log.
+        stats = {'total': 0, 'excluded': 0, 'no_dub': 0, 'low_seeders': 0,
+                 'no_quality': 0, 'passed': 0, 'imdb_matched': 0,
+                 'no_season': 0, 'not_followed': 0, 'watched_season': 0,
+                 'in_transmission': 0}
 
         for torrent in rutracker_torrents:
+            stats['total'] += 1
             # Skip excluded, no dubbing, too few seeders
             if torrent.is_excluded:
+                stats['excluded'] += 1
                 continue
             if not torrent.has_dubbing:
+                stats['no_dub'] += 1
                 continue
             if torrent.seeders < MIN_SEEDERS:
+                stats['low_seeders'] += 1
                 continue
             if not torrent.quality:
+                stats['no_quality'] += 1
                 continue
+
+            stats['passed'] += 1
 
             # Try to match with IMDB
             norm_title = self._normalize_title(torrent.title)
             imdb_item = self._find_imdb_match(norm_title, imdb_tv)
 
-            if imdb_item:
-                series_name = imdb_item.title.lower()
+            if not imdb_item:
+                continue
+            stats['imdb_matched'] += 1
+            series_name = imdb_item.title.lower()
 
-                # Extract season/episode from torrent title
-                season, episode = self._extract_season_episode(torrent.title)
+            # Extract season/episode from torrent title
+            season, episode = self._extract_season_episode(torrent.title)
 
-                if season is None:
-                    continue
+            if season is None:
+                stats['no_season'] += 1
+                continue
 
-                # Determine if this is a new season of watched show
-                watched_seasons = watched_progress.get(series_name, {}).get('seasons', set())
-                in_library = series_name in library_series
+            # Determine if this is a new season of watched show
+            watched_seasons = watched_progress.get(series_name, {}).get('seasons', set())
+            in_library = series_name in library_series
 
-                # Only recommend if user has watched previous seasons of this show
-                if not in_library or len(watched_seasons) == 0:
-                    # New show or never watched - skip
-                    continue
+            # Only recommend if user has watched previous seasons of this show
+            if not in_library or len(watched_seasons) == 0:
+                # New show or never watched - skip
+                stats['not_followed'] += 1
+                continue
 
-                is_new_season = season not in watched_seasons
+            # Never re-offer a season the user already started watching —
+            # such a "recommendation" is noise (verified with real cases:
+            # Star Trek SNW S4, Silo S3).
+            if season in watched_seasons:
+                stats['watched_season'] += 1
+                logger.debug(f"Skipping already watched season: {imdb_item.title} S{season}")
+                continue
 
-                if is_new_season:
-                    reason = f"New season of watched show, IMDB {imdb_item.rating}/10, S{season}"
-                else:
-                    reason = f"Continuation of watched show (watched S{sorted(watched_seasons)}), IMDB {imdb_item.rating}/10, S{season}"
+            # Skip when Transmission already has this show (that season)
+            if self._series_in_transmission(tx_names, series_name, season):
+                stats['in_transmission'] += 1
+                logger.debug(f"Skipping already in Transmission: {imdb_item.title} S{season}")
+                continue
 
-                key = (imdb_item.imdb_id, season)
-                if key not in matches:
-                    matches[key] = []
-                matches[key].append((imdb_item, torrent, reason))
+            reason = f"New season of watched show, IMDB {imdb_item.rating}/10, S{season}"
+
+            key = (imdb_item.imdb_id, season)
+            if key not in matches:
+                matches[key] = []
+            matches[key].append((imdb_item, torrent, reason))
+
+        logger.info(f"Series filter gates: {stats}")
 
         # For each IMDB match + season, pick the best torrent
         recommendations = []
         for (imdb_id, season), torrents in matches.items():
             # Sort by score, pick best
             best_imdb, best_torrent, reason = max(torrents, key=lambda x: self._score_torrent(x[1]))
+            # The episode must come from the chosen torrent, not from the
+            # leftover loop variable of the last scanned row.
+            _, best_episode = self._extract_season_episode(best_torrent.title)
 
             rec = SeriesRecommendation(
                 title=best_imdb.title,
@@ -452,7 +497,7 @@ class MovieRecommender:
                 dub_studio=best_torrent.dub_studio,
                 quality=best_torrent.quality,
                 season=season,
-                episode=episode,
+                episode=best_episode,
                 reason=reason
             )
             recommendations.append(rec)
@@ -479,6 +524,55 @@ class MovieRecommender:
                 return item
 
         return None
+
+    def _get_transmission_names(self) -> List[str]:
+        """Snapshot of torrent names currently in Transmission.
+
+        Used to suppress recommendations that duplicate an active download.
+        Returns an empty list (suppression off) when Transmission is down.
+        """
+        try:
+            if not self.transmission.connect():
+                logger.warning("Transmission unavailable; duplicate suppression disabled")
+                return []
+            names = [getattr(t, 'name', '') or '' for t in self.transmission.get_torrents()]
+            logger.info(f"Transmission torrents: {len(names)}")
+            return names
+        except Exception as e:
+            logger.warning(f"Transmission listing failed: {e}")
+            return []
+
+    @staticmethod
+    def _in_transmission(tx_names: List[str], title: str) -> bool:
+        """True when any Transmission torrent name contains this title."""
+        needle = (title or '').lower().strip()
+        if not needle:
+            return False
+        return any(needle in (name or '').lower() for name in tx_names)
+
+    @staticmethod
+    def _series_in_transmission(tx_names: List[str], show: str, season: int) -> bool:
+        """True when Transmission already has a torrent for this show.
+
+        If the torrent name states a season ("Сезон: 4" / "S04"), only the
+        same season counts; a different season does not suppress the rec.
+        When the show matches but no season marker is present, play safe and
+        treat it as a match (something for the show is downloading).
+        """
+        import re
+        show = (show or '').lower()
+        if not show:
+            return False
+        for name in tx_names:
+            n = (name or '').lower()
+            if show not in n:
+                continue
+            m = re.search(r'сезон[:\s]*(\d+)', n) or re.search(r'\bs(\d{1,2})\b', n)
+            if not m:
+                return True
+            if int(m.group(1)) == season:
+                return True
+        return False
 
     def _normalize_title(self, title: str) -> str:
         """Normalize title for matching."""

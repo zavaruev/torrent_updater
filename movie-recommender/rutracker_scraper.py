@@ -680,32 +680,45 @@ class RutrackerScraper:
         return cookies
 
     def scrape_forum(self, forum_url: str, forum_id: int, max_pages: int = 3) -> List[RutrackerTorrent]:
-        """Scrape a forum for torrents."""
-        from bs4 import BeautifulSoup
-        
+        """Scrape a forum for torrents (up to max_pages pages).
+
+        Follows the forum's REAL pagination instead of assuming a fixed
+        page size: the step differs per forum (f=252 uses 50, f=1803 uses
+        30) and a wrong offset makes rutracker serve an empty "no topics
+        found" page, which used to look like "no more torrents".
+        """
         logger.info(f"Scraping forum {forum_id}...")
         torrents = []
+        seen_topics = set()
         driver = self.sb.driver
-        
+        current_start = 0
+        next_url = forum_url
+
         for page in range(max_pages):
-            url = f"{forum_url}&start={page * 50}" if page > 0 else forum_url
+            if not next_url:
+                break
+            url = next_url
             logger.info(f"  Page {page + 1}: {url}")
 
             page_torrents = []
+            src = ''
             # Up to 3 attempts per page: viewforum sits behind the interactive
             # Cloudflare wall (verified Sep 2026 — a single 8s pass parses 0
             # rows, waiting alone never clears it). Wait out a managed
-            # challenge first, then fall back to the CDP solve.
+            # challenge first, then fall back to the CDP solve. After a solve
+            # the driver is already on the target URL, so attempt 2+ checks
+            # the current page instead of re-navigating (a fresh navigation
+            # could trigger a brand new challenge).
             for attempt in range(1, 4):
-                try:
-                    # Navigate via JS like main.py does
-                    driver.execute_script("window.location.href = arguments[0]", url)
-                    time.sleep(8)  # human pace; bursts trigger CF challenges
-                except Exception as e:
-                    logger.warning(f"  Page {page + 1} nav issue: {e}")
+                if attempt == 1:
+                    try:
+                        # Navigate via JS like main.py does
+                        driver.execute_script("window.location.href = arguments[0]", url)
+                        time.sleep(8)  # human pace; bursts trigger CF challenges
+                    except Exception as e:
+                        logger.warning(f"  Page {page + 1} nav issue: {e}")
 
                 # Wait out a possible CF challenge (managed sometimes auto-clears).
-                src = ''
                 deadline = time.time() + 30
                 while time.time() < deadline:
                     try:
@@ -718,21 +731,47 @@ class RutrackerScraper:
                         break
                     time.sleep(3)
 
+                low = (src or '').lower()
+                challenged = ('just a moment' in low) or ('challenge-platform' in low)
                 page_torrents = self._parse_forum_page(src, forum_id)
                 if page_torrents:
                     break
+                why = 'challenged' if challenged else 'clean but 0 rows'
+                if attempt >= 3:
+                    logger.info(f"  Forum {forum_id} p{page + 1}: giving up ({why})")
+                    break
+                status = self._cdp_solve_page(url)
                 logger.info(f"  Forum {forum_id} p{page + 1} attempt {attempt}: "
-                            f"empty, {'CDP-solving' if attempt < 3 else 'giving up'}")
-                if attempt < 3:
-                    self._cdp_solve_page(url)
-                    time.sleep(5)
+                            f"empty ({why}), solve={status}")
+                time.sleep(3)
 
             if not page_torrents:
                 logger.info("  No more torrents found, stopping")
                 break
 
-            torrents.extend(page_torrents)
-            logger.info(f"  Found {len(page_torrents)} torrents on page {page + 1}")
+            # Dedup: pinned rows repeat on every page of the forum.
+            new_count = 0
+            for t in page_torrents:
+                if t.topic_id not in seen_topics:
+                    seen_topics.add(t.topic_id)
+                    torrents.append(t)
+                    new_count += 1
+            logger.info(f"  Found {len(page_torrents)} torrents on page {page + 1} "
+                        f"({new_count} new)")
+
+            # Next page: only viewforum links of THIS forum count. Topic pages
+            # carry start= params too (viewtopic.php?t=...&start=30) and must
+            # not be mistaken for forum paging — that mistake used to feed
+            # invalid offsets (f=252&start=30) served as empty pages.
+            starts = sorted({int(m) for m in re.findall(
+                rf'viewforum\.php\?f={forum_id}&(?:amp;)?start=(\d+)', src or '')})
+            following = [s for s in starts if s > current_start]
+            if following:
+                current_start = following[0]
+                next_url = f"{forum_url}&start={current_start}"
+            else:
+                next_url = None
+                logger.info("  No next-page link for this forum, done")
 
         return torrents
 

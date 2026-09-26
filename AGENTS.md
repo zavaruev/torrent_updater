@@ -36,13 +36,21 @@ RUTRACKER_BB_DATA=<bb_data value>
 After adding them — `docker compose up -d`. Cookie login is tried first, the login
 form is the fallback.
 
-## Known limitation (Sep 2026)
+## Cloudflare status (Sep 26, 2026)
 Cloudflare shows an interactive check on torrent/tracker pages for automated
-Chrome (datacenter IP + automation flags): the checkbox click is rejected server-side.
-Date checks/search/download on these pages currently run into it; the index,
-statuses, history and recommendations work. Search by query (`tracker.php?nm=`) is
-implemented (`RutrackerScraper.search_tracker` + query-word filter) but awaits
-passing the check for an E2E test.
+Chrome (datacenter IP + automation flags): the checkbox click is rejected
+server-side. Every scraper path now clears it with wait-out + CDP solve
+(`_cdp_solve_page`, up to 3 attempts per page) — verified E2E on 2026-09-26:
+- `scrape_forum` (viewforum): movies f=252 = 3 pages via the forum's REAL
+  pagination (`viewforum.php?f=<id>&start=N` links only — `viewtopic.php?t=...&start=N`
+  topic-page params are a trap that used to feed invalid offsets); series f=1803
+  has a single page (33 topics, no next-page link).
+- `search_tracker` (`tracker.php?nm=`): PASSED its first E2E (51 results for
+  "simpsons" on page 1); query-word filtering happens in `search_best_torrent()`.
+- Date checks on viewtopic pass through the same CDP solve in the check cycle.
+The index, statuses, history, search and recommendations all work. Do not hammer
+the tracker: bursts of requests raise Cloudflare's strictness — keep one session
+browser with 20–30 second pauses between navigations.
 
 ## Jellyfin: media identification (Sep 2026)
 - **DNS**: in `docker-compose.yml` Jellyfin has `dns: [<HOME_DNS>]` (the router IP
