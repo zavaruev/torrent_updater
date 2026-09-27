@@ -4,6 +4,7 @@
 - **Local**: `python main.py` (requires `.env`)
 - **Docker**: `docker-compose up -d --build`
 - **Web UI**: http://localhost:6050
+- **Agent guide**: `HERMES.md` — API reference, guardrails and recipes for the Hermes agent
 
 ## ⚠️ Repository is PUBLIC (since Sep 2026)
 - **All IPs/addresses and passwords live only in `.env`** (`.env` and any `*.env`,
