@@ -219,66 +219,104 @@ async def get_recommendations():
 
     return {"movies": [], "series": [], "timestamp": None}
 
+def _add_url_blocking(rutracker_url: str, content_type: str, season=None,
+                      imdb_id=None) -> dict:
+    """Blocking browser work for /api/add-torrent.
+
+    Downloads the .torrent via the authenticated browser session and adds it
+    to Transmission. Plain `requests` with forged bb_data or session cookies
+    gets a Cloudflare 403 on dl.php (verified Sep 2026) — the in-page fetch
+    with `credentials: 'include'` (the same path as search-and-download) is
+    the only working route. Runs in a thread, never in the FastAPI event loop.
+    """
+    import time
+    from seleniumbase import SB
+    from search_and_download import download_url_and_add_to_transmission
+
+    if not RECOMMENDER_AVAILABLE:
+        return {"success": False, "error": "Recommender module unavailable: " + _rec_import_error}
+
+    login_username = os.environ.get('LOGIN_RUTRACKER')
+    login_password = os.environ.get('PASSWORD_RUTRACKER')
+    tr_host = os.environ.get('TR_HOST')
+    tr_port = int(os.environ.get('TR_PORT', 9091))
+    tr_user = os.environ.get('TR_USER')
+    tr_password = os.environ.get('TR_PASSWORD')
+
+    is_series = content_type == 'series'
+    download_dir = '/series' if is_series else '/movies'
+    labels = ["series", "auto"] if is_series else ["movie", "auto"]
+    if is_series and season:
+        labels.append(f"S{season:02d}")
+    if imdb_id:
+        labels.append(f"imdb_{imdb_id}")
+
+    with SB(uc=True, chromium_arg="--enable-unsafe-swiftshader") as sb:
+        driver = create_session(sb, login_username, login_password)
+        if not driver:
+            return {"success": False, "error": "Failed to login to Rutracker"}
+
+        # Human pace before the download request (bursts trigger Cloudflare).
+        time.sleep(10)
+
+        ok = download_url_and_add_to_transmission(
+            sb, driver, rutracker_url, download_dir,
+            tr_host, tr_port, tr_user, tr_password, labels=labels)
+        if not ok:
+            return {"success": False, "error": "Failed to download and add torrent"}
+
+        logger.info(f"Added {content_type} torrent from {rutracker_url} to {download_dir}")
+        return {"success": True, "message": "Added to " + download_dir}
+
+
 @app.post("/api/add-torrent")
 async def add_torrent(request: Request):
-    """Add torrent from Rutracker URL to Transmission."""
-    from transmission_rpc import Client
-    import requests
-    import re
-    
+    """Add torrent from Rutracker URL to Transmission (recommendations UI).
+
+    On success the matching recommendation is marked `added=true` in the
+    cache, so it disappears from the list — the same rule the API applies
+    to auto-added movies.
+    """
+    import asyncio
+    import json
+    from pathlib import Path
+
     try:
         data = await request.json()
         rutracker_url = data.get('url')
         content_type = data.get('type', 'movie')
-        
+        season = data.get('season')
+        imdb_id = data.get('imdb_id')
+
         if not rutracker_url:
             return {"success": False, "error": "URL is required"}
-        
-        download_dir = "/movies" if content_type == 'movie' else "/series"
-        labels = ["movie", "auto"] if content_type == 'movie' else ["series", "auto"]
-        
-        match = re.search(r't=(\d+)', rutracker_url)
-        if not match:
+
+        if not re.search(r't=(\d+)', rutracker_url):
             return {"success": False, "error": "Invalid Rutracker URL"}
-        
-        topic_id = match.group(1)
-        download_url = "https://rutracker.org/forum/dl.php?t=" + topic_id
-        
-        login_len = len(LOGIN_RUTRACKER)
-        pass_len = len(PASSWORD_RUTRACKER)
-        cookies = {
-            'bb_data': 'a%3A2%3A%7Bs%3A11%3A%22login_username%22%3Bs%3A' + str(login_len) + '%3A%22' + LOGIN_RUTRACKER + '%22%3Bs%3A11%3A%22login_password%22%3Bs%3A' + str(pass_len) + '%3A%22' + PASSWORD_RUTRACKER + '%22%3B%7D'
-        }
-        
-        resp = requests.get(
-            download_url,
-            cookies=cookies,
-            headers={'Referer': rutracker_url},
-            timeout=30
-        )
-        
-        if resp.status_code != 200 or not resp.headers.get('Content-Type', '').startswith('application/x-bittorrent'):
-            return {"success": False, "error": "Failed to download torrent: " + str(resp.status_code)}
-        
-        tr = Client(host=TR_HOST, port=TR_PORT, username=TR_USER, password=TR_PASSWORD)
-        try:
-            torrent = tr.add_torrent(
-                torrent=resp.content,
-                download_dir=download_dir,
-                paused=False,
-                labels=labels
-            )
-        except TypeError:
-            # Older transmission-rpc without `labels` support
-            torrent = tr.add_torrent(
-                torrent=resp.content,
-                download_dir=download_dir,
-                paused=False
-            )
-        
-        logger.info("Added " + content_type + " torrent: " + torrent.name + " (ID: " + str(torrent.id) + ") to " + download_dir)
-        return {"success": True, "torrent_id": torrent.id, "name": torrent.name}
-        
+
+        result = await asyncio.to_thread(
+            _add_url_blocking, rutracker_url, content_type, season, imdb_id)
+
+        if result.get('success'):
+            try:
+                cache_file = Path("/opt/data/cache/movie_recommendations.json")
+                if cache_file.exists():
+                    cached = json.loads(cache_file.read_text(encoding='utf-8'))
+                    changed = False
+                    for key in ('movies', 'series'):
+                        for item in cached.get(key, []):
+                            if item.get('rutracker_url') == rutracker_url:
+                                item['added'] = True
+                                changed = True
+                    if changed:
+                        cache_file.write_text(
+                            json.dumps(cached, ensure_ascii=False, indent=2),
+                            encoding='utf-8')
+            except Exception as e:
+                logger.warning("Failed to mark recommendation as added: " + str(e))
+
+        return result
+
     except Exception as e:
         logger.error("Failed to add torrent: " + str(e))
         return {"success": False, "error": str(e)}

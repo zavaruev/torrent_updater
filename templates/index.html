@@ -326,6 +326,36 @@
             background: #fef3c7;
         }
 
+        /* Recommendation rows have an extra column for the Add button
+           (regular torrent rows keep the original 3-column grid). */
+        .torrent-row.rec-row { grid-template-columns: 1fr auto auto auto; }
+
+        .rec-add {
+            padding: 5px 14px;
+            border-radius: var(--radius-pill);
+            font-family: inherit;
+            font-size: 12px;
+            font-weight: 500;
+            line-height: 1.3;
+            letter-spacing: -0.014em;
+            border: 1px solid var(--accent);
+            background: transparent;
+            color: var(--accent);
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background 0.15s, color 0.15s, opacity 0.15s, border-color 0.15s;
+        }
+        .rec-add:hover { background: var(--accent); color: #fff; }
+        .rec-add:disabled { opacity: 0.55; cursor: wait; }
+        .rec-add.rec-add-done {
+            border-color: #248a3d;
+            color: #248a3d;
+            background: var(--success-bg);
+            cursor: default;
+        }
+        .rec-add.rec-add-error { border-color: var(--error); color: var(--error); }
+        .rec-add.rec-add-error:hover { background: var(--error); color: #fff; }
+
         .empty-state {
             padding: 40px 20px;
             text-align: center;
@@ -689,8 +719,8 @@
                 const res = await fetch('/api/recommendations');
                 const data = await res.json();
                 const items = [
-                    ...(data.movies || []).map(m => ({ ...m, kind: 'Movie' })),
-                    ...(data.series || []).map(s => ({ ...s, kind: 'S' + String(s.season || '').padStart(2, '0') })),
+                    ...(data.movies || []).map(m => ({ ...m, isSeries: false })),
+                    ...(data.series || []).map(s => ({ ...s, isSeries: true })),
                 ];
                 document.getElementById('rec-count').textContent = items.length ? `${items.length} pcs.` : '';
                 if (!items.length) {
@@ -703,13 +733,61 @@
                     const name = m.rutracker_url
                         ? `<a class="torrent-link" href="${escHtml(m.rutracker_url)}" target="_blank" rel="noopener">${escHtml(title)}</a>`
                         : escHtml(title);
-                    return `<div class="torrent-row" title="${escHtml(title)}\n${escHtml(meta)}"><div class="torrent-name">${name}</div><div class="torrent-time">${escHtml(m.kind || '')}</div><span class="badge badge-ok">${escHtml(meta.split(' • ')[0] || '')}</span></div>`;
+                    const kind = m.isSeries
+                        ? (m.season ? `Series · S${String(m.season).padStart(2, '0')}` : 'Series')
+                        : 'Movie';
+                    const addBtn = m.rutracker_url
+                        ? `<button class="rec-add" type="button" data-url="${escHtml(m.rutracker_url)}" data-type="${m.isSeries ? 'series' : 'movie'}" data-season="${parseInt(m.season) || ''}" data-imdb="${escHtml(m.imdb_id || '')}">Add</button>`
+                        : '';
+                    return `<div class="torrent-row rec-row" title="${escHtml(title)}\n${escHtml(meta)}"><div class="torrent-name">${name}</div><div class="torrent-time">${escHtml(kind)}</div><span class="badge badge-ok">${escHtml(meta.split(' • ')[0] || '')}</span>${addBtn}</div>`;
                 }).join('');
             } catch (e) {
                 console.error(e);
                 list.innerHTML = '<div class="empty-state">Failed to load recommendations</div>';
             }
         }
+
+        // ── Add recommendation (series are approved manually from the UI) ──
+        // The download runs through an authenticated browser session and can
+        // take ~30 s (Cloudflare blocks plain HTTP downloads on dl.php).
+        document.getElementById('rec-list').addEventListener('click', async (e) => {
+            const btn = e.target.closest('.rec-add');
+            if (!btn || btn.disabled) return;
+            const original = btn.textContent;
+            btn.disabled = true;
+            btn.classList.remove('rec-add-error');
+            btn.textContent = 'Adding…';
+            btn.title = 'Downloading via the browser session, usually 20–40 s';
+            try {
+                const res = await fetch('/api/add-torrent', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url: btn.dataset.url,
+                        type: btn.dataset.type,
+                        season: btn.dataset.season ? parseInt(btn.dataset.season) : null,
+                        imdb_id: btn.dataset.imdb || null,
+                    }),
+                });
+                const data = await res.json();
+                if (data.success) {
+                    btn.textContent = 'Added ✓';
+                    btn.classList.add('rec-add-done');
+                    // The API marks the entry added=true — it then disappears.
+                    setTimeout(loadRecommendations, 1500);
+                } else {
+                    btn.disabled = false;
+                    btn.textContent = 'Retry';
+                    btn.classList.add('rec-add-error');
+                    btn.title = 'Error: ' + (data.error || 'unknown');
+                }
+            } catch (err) {
+                btn.disabled = false;
+                btn.textContent = 'Retry';
+                btn.classList.add('rec-add-error');
+                btn.title = 'Request failed: ' + err.message;
+            }
+        });
 
         // ── On-demand search ──
         document.getElementById('search-form').addEventListener('submit', async (e) => {

@@ -722,6 +722,39 @@ def download_url_and_add_to_transmission(sb, driver, torrent_url: str, download_
 
     # Use the existing driver (passed from main.py)
     try:
+        # Cloudflare: dl.php is a strict path — fetching from a challenged
+        # page returns 403 (verified Sep 2026: the body is a "Just a moment"
+        # interstitial). Navigate to the topic, wait the challenge out and
+        # CDP-solve it if it persists (the proven scrape_forum pattern)
+        # BEFORE the fetch.
+        driver.execute_script("window.location.href = arguments[0]", torrent_url)
+        time.sleep(8)
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            try:
+                low = driver.page_source.lower()
+            except Exception:
+                time.sleep(3)
+                continue
+            if 'just a moment' not in low and 'challenge-platform' not in low:
+                break
+            time.sleep(3)
+        try:
+            low = driver.page_source.lower()
+        except Exception:
+            low = ''
+        if 'just a moment' in low or 'challenge-platform' in low:
+            from rutracker_scraper import cdp_solve_page
+            status = cdp_solve_page(sb, torrent_url)
+            logger.info(f'CF challenge before download, solve={status}')
+            time.sleep(3)
+            try:
+                low = driver.page_source.lower()
+            except Exception:
+                low = ''
+            if 'just a moment' in low:
+                raise RuntimeError('Cloudflare challenge did not clear before download')
+
         # Download torrent file
         download_url = f'https://rutracker.org/forum/dl.php?t={topic_id}'
         logger.info(f'Downloading torrent from {download_url}')

@@ -130,6 +130,43 @@ class RutrackerTorrent:
     is_excluded: bool = False
 
 
+def cdp_solve_page(sb, url: str) -> str:
+    """Full CDP reload+solve for a challenged page (duplicated from main.py
+    to avoid a circular import; keep the two in sync). Attach goes blank
+    (normal), then CDP-navigate + AWAITED Turnstile solve + reconnect.
+
+    Module-level (takes the SB instance) so download paths such as
+    search_and_download can reuse it without a scraper object.
+    """
+    import asyncio
+    driver = sb.driver
+    try:
+        sb.activate_cdp_mode()
+    except Exception as e:
+        return f"attach-fail {type(e).__name__}"
+    try:
+        sb.goto(url)
+    except Exception as e:
+        return f"cdp-goto-fail {type(e).__name__}"
+    time.sleep(8)
+    try:
+        res = sb.solve_captcha()
+        if asyncio.iscoroutine(res):
+            res = asyncio.run(res)
+    except Exception as e:
+        return f"solve-fail {type(e).__name__}"
+    time.sleep(5)
+    try:
+        sb.connect()
+    except Exception:
+        pass
+    try:
+        ok = 'just a moment' not in driver.page_source.lower()
+        return f"solved={res} clean={ok}"
+    except Exception:
+        return f"solved={res} clean=?"
+
+
 class RutrackerScraper:
     """Scrapes Rutracker forums for movies and TV shows."""
 
@@ -527,37 +564,9 @@ class RutrackerScraper:
         return results
 
     def _cdp_solve_page(self, url: str) -> str:
-        """Full CDP reload+solve for a challenged page (duplicated from main.py
-        to avoid a circular import; keep the two in sync). Attach goes blank
-        (normal), then CDP-navigate + AWAITED Turnstile solve + reconnect."""
-        import asyncio
-        sb = self.sb
-        driver = sb.driver
-        try:
-            sb.activate_cdp_mode()
-        except Exception as e:
-            return f"attach-fail {type(e).__name__}"
-        try:
-            sb.goto(url)
-        except Exception as e:
-            return f"cdp-goto-fail {type(e).__name__}"
-        time.sleep(8)
-        try:
-            res = sb.solve_captcha()
-            if asyncio.iscoroutine(res):
-                res = asyncio.run(res)
-        except Exception as e:
-            return f"solve-fail {type(e).__name__}"
-        time.sleep(5)
-        try:
-            sb.connect()
-        except Exception:
-            pass
-        try:
-            ok = 'just a moment' not in driver.page_source.lower()
-            return f"solved={res} clean={ok}"
-        except Exception:
-            return f"solved={res} clean=?"
+        """Thin delegate to the shared module-level helper (kept for call
+        sites that hold a scraper instance)."""
+        return cdp_solve_page(self.sb, url)
 
     def _parse_tracker_page(self, page_source: str) -> List[RutrackerTorrent]:
         """Parse tracker.php search results. Single pass over EVERY table row

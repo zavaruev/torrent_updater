@@ -48,9 +48,22 @@ server-side. Every scraper path now clears it with wait-out + CDP solve
 - `search_tracker` (`tracker.php?nm=`): PASSED its first E2E (51 results for
   "simpsons" on page 1); query-word filtering happens in `search_best_torrent()`.
 - Date checks on viewtopic pass through the same CDP solve in the check cycle.
+- Download (`dl.php`): a fetch from a challenged page returns CF 403 (body is a
+  "Just a moment" interstitial). `download_url_and_add_to_transmission` now
+  waits out + CDP-solves the topic page BEFORE the in-page fetch (verified
+  2026-09-27: 87 KB .torrent fetched OK). Plain `requests` (forged bb_data or
+  env session cookies) get 403 regardless — the browser session is mandatory.
 The index, statuses, history, search and recommendations all work. Do not hammer
 the tracker: bursts of requests raise Cloudflare's strictness — keep one session
 browser with 20–30 second pauses between navigations.
+
+## Recommendations UI (Sep 2026)
+- Movies auto-add (up to `MAX_MOVIES_PER_RUN`); series are manual: the UI has
+  an **Add** button per row → `POST /api/add-torrent` (browser-session download,
+  ~30 s, marks the cache entry `added=true` so the row disappears; the API
+  drops `added=true` entries).
+- Rows are marked `Movie` / `Series · SNN`; series carries season + `imdb_*`
+  labels for Transmission.
 
 ## Jellyfin: media identification (Sep 2026)
 - **DNS**: in `docker-compose.yml` Jellyfin has `dns: [<HOME_DNS>]` (the router IP
